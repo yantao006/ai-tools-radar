@@ -50,6 +50,18 @@ export function isDryRunSafeMethod(method) {
   return /^(GET|HEAD|OPTIONS)$/i.test(String(method || 'GET'));
 }
 
+export function installDryRunFormGuard(scope = globalThis) {
+  const proto = scope.HTMLFormElement && scope.HTMLFormElement.prototype;
+  if (!proto) return false;
+  scope.document.addEventListener('submit', (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  proto.submit = function submit() {};
+  proto.requestSubmit = function requestSubmit() {};
+  return true;
+}
+
 export function makeWatchdogPlan(maxMinutes, busyTimeoutMs) {
   const minutes = Number(maxMinutes);
   const busy = Number(busyTimeoutMs);

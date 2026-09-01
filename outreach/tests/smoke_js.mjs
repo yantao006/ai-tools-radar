@@ -167,6 +167,14 @@ const ss = await import('../submission_safety.mjs');
 await t('回执分类', () => { if (ss.classifyReceiptText('Your submission has been received') !== 'success') throw new Error('回执判不出'); });
 await t('回执否定优先', () => { if (ss.classifyReceiptText('Your submission was not received') !== null) throw new Error('否定句未过滤'); });
 await t('hasSubmitVerb', () => { if (!ss.hasSubmitVerb('Submit')) throw new Error('x'); });
+await t('控件激活统一拦截', () => {
+  const submit = { tagName: 'INPUT', type: 'submit', text: 'Post Comment' };
+  if (!ss.activationBlockReason(submit, 'fill')) throw new Error('fill 可激活 submit');
+  if (!ss.activationBlockReason(submit, 'select')) throw new Error('select 可激活 submit');
+  if (!ss.activationBlockReason(submit, 'click', '', true)) throw new Error('dry-run click 可激活 submit');
+  if (!ss.activationBlockReason({ tagName: 'A', href: '#comments', hasHref: true }, 'click', 'Reply', true)) throw new Error('dry-run reply 可激活');
+  if (ss.activationBlockReason({ tagName: 'INPUT', type: 'text' }, 'fill')) throw new Error('普通字段被拦');
+});
 const wd = await import('../wall_detect.mjs');
 await t('hostAllowed 拒外域', () => { if (wd.hostAllowed('evil.com', 'x.com')) throw new Error('未拦'); });
 await t('inferConstraint', () => wd.inferConstraint('skipped_paid', ''));
@@ -179,6 +187,20 @@ await t('dry-run 拦外部副作用', () => {
   if (!rt.dryRunBlockReason({ action: 'register' })) throw new Error('register 未拦');
   if (rt.dryRunBlockReason({ action: 'fill', target: 'i0' })) throw new Error('fill 被误拦');
   if (rt.isDryRunSafeMethod('POST') || !rt.isDryRunSafeMethod('GET')) throw new Error('请求方法护栏错误');
+});
+await t('dry-run 表单提交 fail-closed', () => {
+  let listener;
+  let submitted = 0;
+  function Form() {}
+  Form.prototype.submit = () => { submitted++; };
+  Form.prototype.requestSubmit = () => { submitted++; };
+  const scope = { HTMLFormElement: Form, document: { addEventListener: (_type, fn) => { listener = fn; } } };
+  if (!rt.installDryRunFormGuard(scope)) throw new Error('表单护栏未安装');
+  new Form().submit();
+  new Form().requestSubmit();
+  let prevented = 0;
+  listener({ preventDefault: () => { prevented++; }, stopImmediatePropagation: () => {} });
+  if (submitted || prevented !== 1) throw new Error('表单提交未被硬拦截');
 });
 const egoAdapter = await import('../ego_browser_adapter.mjs');
 await t('Ego 环境桥最小化', () => {

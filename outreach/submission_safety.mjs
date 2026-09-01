@@ -35,8 +35,20 @@ export function isSubmitElementMeta(meta, target = '') {
   return verbHit;
 }
 
-export async function isSubmitClassClick(el, target) {
-  const meta = await el.evaluate(e => {
+export function activationBlockReason(meta, action, target = '', dryRun = false) {
+  const kind = String(action || '').toLowerCase();
+  const submitClass = isSubmitElementMeta(meta, target);
+  if (dryRun && kind === 'click' && /comment|reply|respond|评论|留言|回应/i.test(String(target || ''))) {
+    return 'dry-run 禁止激活评论或回复控件';
+  }
+  if (!submitClass) return null;
+  if (kind === 'fill' || kind === 'select') return `不能对提交类控件执行 ${kind}`;
+  if (dryRun && kind === 'click') return 'dry-run 禁止激活提交类控件';
+  return null;
+}
+
+async function elementMeta(el) {
+  return el.evaluate(e => {
     const action = e.closest('a[href],button,input,[role=button]') || e;
     const form = action.form || action.closest('form');
     return {
@@ -50,7 +62,14 @@ export async function isSubmitClassClick(el, target) {
       meta: `${action.id || ''} ${action.name || ''} ${action.className || ''}`,
     };
   }, undefined, { timeout: 2500 }).catch(() => null);
-  return isSubmitElementMeta(meta, target);
+}
+
+export async function controlActivationBlockReason(el, action, target = '', dryRun = false) {
+  return activationBlockReason(await elementMeta(el), action, target, dryRun);
+}
+
+export async function isSubmitClassClick(el, target) {
+  return isSubmitElementMeta(await elementMeta(el), target);
 }
 
 // 否定/错误必须先行。保守漏判会留在 ambiguous；误判成功会造成重复投递与假记分。

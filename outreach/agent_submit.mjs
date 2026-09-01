@@ -24,11 +24,12 @@ import { createEgoBrowser, egoEnvironment, egoLauncherSource } from './ego_brows
 import * as cs from './capsolver.mjs';
 import * as dbw from './state.mjs';
 import {
-  isSubmitClassClick, hasSubmitVerb, classifyReceiptText, htmlText,
+  isSubmitClassClick, controlActivationBlockReason, hasSubmitVerb, classifyReceiptText, htmlText,
 } from './submission_safety.mjs';
 import {
   actionResult, normalizeActionResult, dryRunBlockReason,
   shouldObserveSubmit, shouldTrackSubmitNoDelta, makeWatchdogPlan, isDryRunSafeMethod,
+  installDryRunFormGuard,
 } from './agent_submit_runtime.mjs';
 import * as credsFile from './creds.mjs';
 import * as wd from './wall_detect.mjs';
@@ -747,8 +748,9 @@ async function revealForm(pg) {
         && !/login|sign|share|social|search/i.test(text) ? text.trim().slice(0, 60) : null;
     }, TRIGGER.source).catch(() => null);
     if (!candidate) continue;
+    const activationBlock = await controlActivationBlockReason(el, 'click', candidate, DRY_RUN);
+    if (activationBlock) return `[dry-run] 已拦截${activationBlock},未点击`;
     if (await isSubmitClassClick(el, candidate)) {
-      if (DRY_RUN) return '[dry-run] 已拦截提交类评论触发器,未点击';
       continue;
     }
     await el.scrollIntoViewIfNeeded().catch(() => {});
@@ -797,6 +799,8 @@ async function actImpl(pg, a, dom) {
     case 'fill': {
       const el = await locate(pg, a.target);
       if (!el) return `填失败:找不到 ${a.target}`;
+      const activationBlock = await controlActivationBlockReason(el, 'fill', a.target, DRY_RUN);
+      if (activationBlock) return `填失败:${activationBlock}`;
       let v = resolveValue(a.value);
       // 【2026-07-26 加】按字段容量适配。原来一律填 descriptions.*[0],从不看 maxlength ——
       // 站方设了 maxlength 时浏览器**静默截断**,句子被切一半就提交上去了。
@@ -854,6 +858,8 @@ async function actImpl(pg, a, dom) {
           // 别让 Locator.evaluate 干等 30s 默认超时。
           const textEl = pg.locator(`text=${JSON.stringify(String(a.target))}`).first();
           if (await textEl.count() === 0) return actionResult(`点失败:找不到 ${a.target}`);
+          const activationBlock = await controlActivationBlockReason(textEl, 'click', a.target, DRY_RUN);
+          if (activationBlock) return actionResult(`[dry-run] 已拦截${activationBlock} ${a.target},未点击`);
           const textSubmit = await isSubmitClassClick(textEl, a.target);
           const dryBlock = DRY_RUN && dryRunBlockReason(a, { submitClass: textSubmit });
           if (dryBlock) {
@@ -869,6 +875,10 @@ async function actImpl(pg, a, dom) {
           if (e && e.ledger) throw e;
           return actionResult(`点失败:找不到 ${a.target}`);
         }
+      }
+      const activationBlock = await controlActivationBlockReason(el, 'click', a.target, DRY_RUN);
+      if (activationBlock) {
+        return actionResult(`[dry-run] 已拦截${activationBlock} ${a.target},未点击`, true, false);
       }
       if (pg._recaptchaToken) {
         const inCaptchaForm = await el.evaluate(e => {
@@ -945,6 +955,8 @@ async function actImpl(pg, a, dom) {
     case 'select': {
       const el = await locate(pg, a.target);
       if (!el) return `选失败:找不到 ${a.target}`;
+      const activationBlock = await controlActivationBlockReason(el, 'select', a.target, DRY_RUN);
+      if (activationBlock) return `选失败:${activationBlock}`;
       // 【2026-07-27 修】原来直接 [...s.options] —— LLM 让 select 的目标未必真是 <select>,
       // 很多站用 div/ul 自造下拉。非 select 元素没有 .options,展开就抛
       //   TypeError: s.options is not iterable
@@ -966,12 +978,16 @@ async function actImpl(pg, a, dom) {
       if (ok.kind === 'err') return `选失败:${ok.msg}`;
       // 自造下拉:点开它,再在浮层里点包含目标文字的那一项
       try {
+        const openerBlock = await controlActivationBlockReason(el, 'click', a.target, DRY_RUN);
+        if (openerBlock) return `选失败:${openerBlock}`;
         await el.click({ timeout: 4000 });
         await pg.waitForTimeout(600);
         const opt = pg.locator(
           `[role=option], li, [class*=option], [class*=item]`
         ).filter({ hasText: new RegExp(a.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }).first();
         if (await opt.count()) {
+          const optionBlock = await controlActivationBlockReason(opt, 'click', a.value, DRY_RUN);
+          if (optionBlock) return `选失败:${optionBlock}`;
           await opt.click({ timeout: 4000 });
           await pg.waitForTimeout(500);
           return `已选 ${a.value}(自造下拉)`;
@@ -2027,6 +2043,7 @@ export const AGENT_RUN = (async () => {
     if (/(googlesyndication|doubleclick|googletagmanager|google-analytics|facebook\.net|adsystem|adservice|scorecardresearch|hotjar|clarity\.ms)/i.test(u)) return r.abort();
     return r.continue();
   });
+  if (DRY_RUN) await ctx.addInitScript(installDryRunFormGuard);
   // mailto 护栏继续在每个新文档加载前注入。
   await ctx.addInitScript(() => {
     document.addEventListener('click', (e) => {
@@ -2129,7 +2146,7 @@ export const AGENT_RUN = (async () => {
     }
     // ---- recipe 快放:有沉淀打法先走捷径 ----
     initRecipes();
-    const recipe = process.argv.includes('--fresh') ? null : loadRecipe(dom);
+    const recipe = DRY_RUN || process.argv.includes('--fresh') ? null : loadRecipe(dom);
     if (recipe && recipe.steps) {
       console.log(`[${dom}] 有 recipe(${recipe.steps.length}步),快放…`);
       const rp = await replayRecipe(pg, dom, recipe);
@@ -2278,7 +2295,7 @@ export const AGENT_RUN = (async () => {
       // ⚠️ 只接管**本次 run 开跑后**新开的 tab:用户在受控浏览器里常挂着 Gmail/
       // myaccount 等旧 tab,连上次 run 的 OAuth 残页也在 —— 不区分的话会把 run
       // 劫到 Gmail 收件箱去(实证)。起跑时快照了 pagesAtStart。
-      if (useCdp) {
+      if (useCdp && !DRY_RUN) {
         try {
           if (pg.isClosed()) {
             pg = ctx.pages().find(p => !p.isClosed() && p.url().includes(dom)) || ctx.pages()[0];

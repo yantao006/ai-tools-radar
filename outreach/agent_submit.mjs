@@ -1,6 +1,7 @@
 // agent_submit.mjs — LLM-in-the-loop 目录提交代理(2026-08-16 开源移植版)
 // 观察页面 → LLM 决策 → 执行 → 再观察,像人一样处理变体。
-// 用法:node agent_submit.mjs <域名或URL> [--kit kit.json] [--cdp] [--steps N] [--proxy URL]
+// 用法:node agent_submit.mjs <域名或URL> [--kit kit.json] [--steps N] [--dry-run]
+// 入口会把本模块委托给 `ego-browser nodejs`,并固定复用 seedream-outreach task space。
 // 红线由代码硬执行,LLM 无权越过:
 //   1) 付费:LLM 选择付费/结账类动作 → 直接 skipped_paid 终止
 //   2) 文案:所有填入值必须过 kit forbidden_claims;LLM 只能选预设槽位或改写自 kit 事实
@@ -12,21 +13,23 @@
 //     旧的 LLM_ENDPOINT/LLM_KEY 仍兼容);不再读任何私有网关配置
 //   - 账本 dbw(SQLite)→ state.mjs(state.jsonl + events/costs/constraints/human_tasks),
 //     状态枚举/迁移守卫/投递认领语义逐条对齐
-//   - 代理:--proxy 参数或 HTTPS_PROXY 环境变量,默认直连;无住宅出口基建
+//   - 浏览器:Ego Browser task space,不启动 Chrome 或 Playwright Chromium
+//   - 代理:浏览器出口由 Ego Lite 管理;CapSolver 仍认 --proxy/HTTPS_PROXY 以匹配出口
 //   - 站点注册凭据:outreach/creds.json(creds.mjs,排他锁+原子写)
-import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync, execFileSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync } from 'node:child_process';
+import { createEgoBrowser, egoEnvironment, egoLauncherSource } from './ego_browser_adapter.mjs';
 import * as cs from './capsolver.mjs';
 import * as dbw from './state.mjs';
 import {
-  isSubmitClassClick, hasSubmitVerb, classifyReceiptText, htmlText,
+  isSubmitClassClick, controlActivationBlockReason, hasSubmitVerb, classifyReceiptText, htmlText,
 } from './submission_safety.mjs';
 import {
-  actionResult, normalizeActionResult,
-  shouldObserveSubmit, shouldTrackSubmitNoDelta, makeWatchdogPlan,
+  actionResult, normalizeActionResult, dryRunBlockReason,
+  shouldObserveSubmit, shouldTrackSubmitNoDelta, makeWatchdogPlan, isDryRunSafeMethod,
+  installDryRunFormGuard,
 } from './agent_submit_runtime.mjs';
 import * as credsFile from './creds.mjs';
 import * as wd from './wall_detect.mjs';
@@ -34,13 +37,52 @@ import * as og from './outbound_guard.mjs';
 import { rootDomain } from './rootdomain.mjs';
 import * as llmcfg from './llm_config.mjs';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));   // outreach/ 目录
+const EGO_TASK_SPACE = 'seedream-outreach';
+const EGO_HELPERS = globalThis.__EGO_BROWSER_HELPERS__ || null;
+const MODULE_HERE = path.dirname(fileURLToPath(import.meta.url));
+
+// `node agent_submit.mjs ...` 保持原入口兼容,但实际浏览器代码只能在 Ego 的嵌入式
+// Node runtime 内运行。父进程只负责把参数和环境交给 `ego-browser nodejs`。
+if (!EGO_HELPERS) {
+  const env = { ...process.env };
+  delete env.CHROME_BIN;
+  delete env.PLAYWRIGHT_BROWSERS_PATH;
+  const runDir = path.join(MODULE_HERE, 'run');
+  fs.mkdirSync(runDir, { recursive: true });
+  const envFile = path.join(runDir, `.ego-env-${process.pid}-${Date.now()}.json`);
+  let child;
+  try {
+    // 环境桥可能含 API key,只写 0600 临时文件。launcher stdin 只带文件路径,
+    // 不把 secret 放进命令行、日志或 Ego 脚本文本。
+    fs.writeFileSync(envFile, JSON.stringify(egoEnvironment(process.env)), { mode: 0o600, flag: 'wx' });
+    const source = egoLauncherSource(
+      import.meta.url, process.argv.slice(2), EGO_TASK_SPACE, envFile,
+    );
+    child = spawnSync(process.env.EGO_BROWSER_BIN || 'ego-browser', ['nodejs'], {
+      input: source,
+      cwd: process.cwd(),
+      env,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } finally {
+    fs.rmSync(envFile, { force: true });
+  }
+  if (child.stdout) process.stdout.write(child.stdout);
+  if (child.stderr) process.stderr.write(child.stderr);
+  if (child.error) console.error(`[ego] 启动失败:${String(child.error.message).slice(0, 160)}`);
+  process.exit(Number.isInteger(child.status) ? child.status : 1);
+}
+
+const HERE = MODULE_HERE;   // outreach/ 目录
 // 多产品:--kit <backlink-kit.json 路径> 指定产品资料包,默认 outreach/kit.json
 // (cp kit.example.json kit.json 后改成自己的产品资料)
 const _kitIdx = process.argv.indexOf('--kit');
-const KIT_PATH = _kitIdx > 0 ? process.argv[_kitIdx + 1] : path.join(HERE, 'kit.json');
+const _kitArg = _kitIdx > 0 ? process.argv[_kitIdx + 1] : 'kit.json';
+const KIT_PATH = path.isAbsolute(_kitArg) ? _kitArg : path.resolve(HERE, _kitArg);
 const KIT = JSON.parse(fs.readFileSync(KIT_PATH, 'utf8'));
 const PY_BIN = process.env.PYTHON_BIN || 'python3';
+const DRY_RUN = process.argv.includes('--dry-run');
 
 // LLM 端点/key/模型统一走 llm_config(base URL 与完整地址都收,env 与 llm.json 都读;
 // 规则见 llm_config.py 文件头,JS/Python 两份逐条一致)
@@ -52,28 +94,9 @@ for (const w of LLM.warnings) console.log(`[llm] ${w}`);
 const MAX_MINUTES = +(process.env.SUBMIT_MAX_MINUTES || 8);
 const WATCHDOG_PLAN = makeWatchdogPlan(MAX_MINUTES, dbw.BUSY_TIMEOUT_MS || 30000);
 
-/* ============================================================
-   反检测(2026-07-27 收编)
-
-   这些零件仓里早就有(submit-ebool.js 的 addInitScript 抹 webdriver、
-   ts_solve.js 的 locale、submit-ebook.js 的逐字打字),但**主力通道一件没用上** ——
-   非 CDP 分支只设了 viewport。#19 里 13 个站被 Cloudflare 拦在页面加载阶段,
-   连出现 sitekey、进到打码环节的机会都没有。
-
-   实证参照:ebool.com 走 CDP 接管真实 Chrome 成功了,同一个站走 LLM-in-loop 失败。
-   真实浏览器天然带完整指纹,这里做的是尽量把 headless 拉近那个状态。
-
-   ⚠️ 目的是"不被当成扫描器",不是伪装成特定的人。UA 用真实存在的 Chrome 版本串,
-   与 sec-ch-ua / platform / timezone 必须自洽 —— 互相打架比不设还容易被识别。
-   ============================================================ */
-// ⚠️ 全链路必须用**同一个** UA,而且必须是 Windows 的:
-// CapSolver 的 AntiCloudflareTask 只接受 Windows Chrome UA(macOS 会 ERROR_INVALID_TASK_DATA),
-// 而它返回的 cf_clearance cookie 是**和解题时的 UA 绑定**的 ——
-// 浏览器报 macOS、解题报 Windows,Cloudflare 一校验 clearance 就作废,
-// 白花钱还是过不去(:441 那个分支的老问题)。统一成 Windows 就都自洽了。
-const STEALTH_UA = process.env.SUBMIT_UA ||
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-  + '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+// Ego Lite 提供真实浏览器指纹,这里不再覆盖 webdriver、UA、平台或 WebGL。
+// 浏览器加载后读回实际 UA,验证码服务必须与浏览器使用同一 UA。
+let BROWSER_UA = process.env.SUBMIT_UA || '';
 
 // 【07-31 修】httpLog 提升到模块级:原在 main IIFE 里 const,email_otp 分支(898 行)
 // 引用它直接 ReferenceError(agentlocker.ai 实证,整站被打穿)。表单 POST 证据日志,
@@ -87,16 +110,6 @@ function publicProxyUrl() {
   const pi = process.argv.indexOf('--proxy');
   if (pi > 0) return process.argv[pi + 1];
   return process.env.HTTPS_PROXY || process.env.https_proxy || null;
-}
-
-/** socks5/http(s)://user:pass@host:port → Playwright 的 {server,username,password} */
-function parseProxy(url) {
-  try {
-    const u = new URL(url);
-    const o = { server: `${u.protocol}//${u.hostname}:${u.port}` };
-    if (u.username) { o.username = decodeURIComponent(u.username); o.password = decodeURIComponent(u.password); }
-    return o;
-  } catch { return { server: url }; }
 }
 
 /** 像人一样填字段:先聚焦、清空、逐字敲。
@@ -130,35 +143,6 @@ async function humanFill(pg, el, v) {
   }
 }
 
-/** 在每个页面(含 iframe)注入,抹掉最常被查的自动化痕迹。 */
-function stealthInit() {
-  // 1) navigator.webdriver:headless 下为 true,是最直白的标志
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  // 2) window.chrome:真 Chrome 有,headless 常缺
-  window.chrome = window.chrome || { runtime: {}, loadTimes() {}, csi() {} };
-  // 3) 语言:必须和 Accept-Language / locale 一致
-  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-  // 4) 插件数为 0 是 headless 的经典指纹
-  Object.defineProperty(navigator, 'plugins', {
-    get: () => [1, 2, 3, 4, 5].map((i) => ({ name: `Plugin ${i}` })),
-  });
-  // 5) 权限查询:headless 下 notifications 会返回矛盾结果
-  const q = window.navigator.permissions && window.navigator.permissions.query;
-  if (q) {
-    window.navigator.permissions.query = (p) =>
-      p && p.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission })
-        : q.call(window.navigator.permissions, p);
-  }
-  // 6) WebGL 厂商串:headless 常报 SwiftShader/Google Inc.,真机是显卡名
-  const gp = WebGLRenderingContext.prototype.getParameter;
-  WebGLRenderingContext.prototype.getParameter = function (p) {
-    // 与 Windows UA 自洽的显卡串(报 macOS 显卡会和 UA 打架)
-    if (p === 37445) return 'Google Inc. (Intel)';                       // UNMASKED_VENDOR_WEBGL
-    if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-    return gp.apply(this, [p]);
-  };
-}
 const MAX_CAPTCHA = +(process.env.SUBMIT_MAX_CAPTCHA || 3);
 // 产品指纹(核验/实锤用):域名主体,如 example.com → example
 const PSLUG = (KIT.product.url || '').replace(/^https?:\/\//, '').replace(/^www\./, '').split('.')[0].toLowerCase();
@@ -188,9 +172,8 @@ const CONSTRAINT_STATUS = {
 let advisory = [];
 function advisoryNote() {
   const extra = [];
-  // 【2026-07-30】CDP 受控浏览器模式:浏览器里有用户登录好的 Google 小号。
-  // 不告诉 LLM 这件事,它看见 OAuth 墙就直接判 blocked(goodaitools 实证)。
-  if (process.argv.includes('--cdp')) {
+  // Ego task space 继承受控登录态,遇到 OAuth 墙可以沿用已登录账号。
+  if (EGO_HELPERS) {
     extra.push('- 当前是受控真实浏览器,**已登录 Google 账号**。遇到 Google OAuth/'
       + 'Continue with Google/Sign in with Google 的注册或登录墙时,**直接点该按钮**完成授权,'
       + '不要判 blocked。已登录时授权页通常自动跳过;若出现账号选择/同意页,选那个已登录的'
@@ -210,6 +193,7 @@ function advisoryNote() {
 /** 从终局理由里认出可复用的硬约束,记进 site_constraints,下次直接短路
  *  归因正则已收进 wall_detect.js(inferConstraint),这里只保留记库副作用。 */
 function recordConstraint(dom, status, reason) {
+  if (DRY_RUN) return;
   try {
     const code = wd.inferConstraint(status, reason);
     if (!code) return;
@@ -555,6 +539,7 @@ function siteRootOf(dom) {
 // defer 标记:本 run 期间该域的验证信由浏览器接管,服务端(sweeper)只校验不点开,
 // 免得一次性 token 被 curl_cffi 提前烧掉。TTL 靠 mtime,sweeper 侧超 20 分钟就无视。
 function deferMark(dom) {
+  if (DRY_RUN) return;
   try {
     const dir = path.join(HERE, 'run', 'agent_defer');
     fs.mkdirSync(dir, { recursive: true });
@@ -607,6 +592,7 @@ const MODEL_FALLBACKS = LLM.models.slice(1);
  */
 let CURRENT_DOM = null;      // 主流程拿到域名后设一次,给记账归属用
 function billLLM(dom, kind) {
+  if (DRY_RUN) return;
   // 单价是估算($0.003/次,vision $0.006),对账以你的 LLM 提供商账单为准;
   // 口径与生产版一致,日预算/成本盘点读 costs.jsonl。
   try {
@@ -751,19 +737,27 @@ async function revealForm(pg) {
         .filter(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)).length).catch(() => 0);
     if (now > 0) return `展开了 ${expanded} 个折叠评论容器,可见控件 ${before}→${now}`;
   }
-  const clicked = await pg.evaluate((re) => {
-    const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-    const RE = new RegExp(re, 'i');
-    const els = [...document.querySelectorAll('button,a,[role=button],input[type=submit],summary')]
-      .filter(vis);
-    for (const el of els) {
-      const t = ((el.innerText || el.value || '') + ' ' + (el.id || '') + ' ' + (el.className || '')).slice(0, 80);
-      if (RE.test(t) && !/login|sign|share|social|search/i.test(t)) {
-        el.scrollIntoViewIfNeeded?.(); el.click(); return t.trim().slice(0, 60);
-      }
+  let clicked = null;
+  const candidates = await pg.$$('button,a,[role=button],input[type=submit],summary').catch(() => []);
+  for (const el of candidates) {
+    const candidate = await el.evaluate((node, re) => {
+      const visible = !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
+      const text = ((node.innerText || node.value || '') + ' ' + (node.id || '') + ' '
+        + (node.className || '')).slice(0, 80);
+      return visible && new RegExp(re, 'i').test(text)
+        && !/login|sign|share|social|search/i.test(text) ? text.trim().slice(0, 60) : null;
+    }, TRIGGER.source).catch(() => null);
+    if (!candidate) continue;
+    const activationBlock = await controlActivationBlockReason(el, 'click', candidate, DRY_RUN);
+    if (activationBlock) return `[dry-run] 已拦截${activationBlock},未点击`;
+    if (await isSubmitClassClick(el, candidate)) {
+      continue;
     }
-    return null;
-  }, TRIGGER.source).catch(() => null);
+    await el.scrollIntoViewIfNeeded().catch(() => {});
+    await el.click();
+    clicked = candidate;
+    break;
+  }
   if (!clicked) return '没找到评论触发器';
   await pg.waitForTimeout(2500);
   const after = await pg.evaluate(() =>
@@ -772,6 +766,10 @@ async function revealForm(pg) {
 }
 
 async function actImpl(pg, a, dom) {
+  if (DRY_RUN && a.action !== 'click') {
+    const blocked = dryRunBlockReason(a);
+    if (blocked) return `[dry-run] 已拦截${blocked},未产生外部副作用`;
+  }
   switch (a.action) {
     case 'reveal_form':
       return await revealForm(pg);
@@ -801,6 +799,8 @@ async function actImpl(pg, a, dom) {
     case 'fill': {
       const el = await locate(pg, a.target);
       if (!el) return `填失败:找不到 ${a.target}`;
+      const activationBlock = await controlActivationBlockReason(el, 'fill', a.target, DRY_RUN);
+      if (activationBlock) return `填失败:${activationBlock}`;
       let v = resolveValue(a.value);
       // 【2026-07-26 加】按字段容量适配。原来一律填 descriptions.*[0],从不看 maxlength ——
       // 站方设了 maxlength 时浏览器**静默截断**,句子被切一半就提交上去了。
@@ -858,7 +858,13 @@ async function actImpl(pg, a, dom) {
           // 别让 Locator.evaluate 干等 30s 默认超时。
           const textEl = pg.locator(`text=${JSON.stringify(String(a.target))}`).first();
           if (await textEl.count() === 0) return actionResult(`点失败:找不到 ${a.target}`);
+          const activationBlock = await controlActivationBlockReason(textEl, 'click', a.target, DRY_RUN);
+          if (activationBlock) return actionResult(`[dry-run] 已拦截${activationBlock} ${a.target},未点击`);
           const textSubmit = await isSubmitClassClick(textEl, a.target);
+          const dryBlock = DRY_RUN && dryRunBlockReason(a, { submitClass: textSubmit });
+          if (dryBlock) {
+            return actionResult(`[dry-run] 已拦截${dryBlock} ${a.target},未点击`, textSubmit, false);
+          }
           if (textSubmit && !claimDelivery(dom, `text 兜底点击 ${a.target}`)) {
             return actionResult(`已有投递认领/投达终局,text 兜底不重复点提交类文案 ${a.target} → 交观察流判定`, true, false);
           }
@@ -869,6 +875,10 @@ async function actImpl(pg, a, dom) {
           if (e && e.ledger) throw e;
           return actionResult(`点失败:找不到 ${a.target}`);
         }
+      }
+      const activationBlock = await controlActivationBlockReason(el, 'click', a.target, DRY_RUN);
+      if (activationBlock) {
+        return actionResult(`[dry-run] 已拦截${activationBlock} ${a.target},未点击`, true, false);
       }
       if (pg._recaptchaToken) {
         const inCaptchaForm = await el.evaluate(e => {
@@ -915,6 +925,9 @@ async function actImpl(pg, a, dom) {
       // (看到回执→成功,看到校验错误→blocked 也会被守卫拦成 delivery_ambiguous),
       // 绝不盲点第二次。非提交类控件维持原 DOM 兜底(导航/展开类双击无害)。
       if (await isSubmitClassClick(el, a.target)) {
+        if (DRY_RUN) {
+          return actionResult(`[dry-run] 已拦截提交类点击 ${a.target},未点击`, true, false);
+        }
         // 【08-11 十二轮评审 P2-3】single-shot 教义补完:认领被拒(本进程已派发过,
         // 或上一轮的认领行/投达终局还在)= 绝不再点第二次,交观察流。
         if (!claimDelivery(dom, `点击提交 ${a.target}`)) {
@@ -929,6 +942,7 @@ async function actImpl(pg, a, dom) {
       // <button>Submit</button>):也要单发派发、禁 DOM 盲点第二次;此路径语义不定
       // 不认领、不计 submitClass(不触发主循环的空转计数),交给后续观察判。
       if (hasSubmitVerb(a.target)) {
+        if (DRY_RUN) return actionResult(`[dry-run] 已拦截提交动词点击 ${a.target},未点击`);
         const clickErr = await dispatchClickOnce(el);
         await pg.waitForTimeout(2500);
         if (clickErr) return actionResult(`点击返回异常(${String(clickErr.message).slice(0, 60)}),动词兜底单发后交观察流,不再盲点第二次`);
@@ -941,6 +955,8 @@ async function actImpl(pg, a, dom) {
     case 'select': {
       const el = await locate(pg, a.target);
       if (!el) return `选失败:找不到 ${a.target}`;
+      const activationBlock = await controlActivationBlockReason(el, 'select', a.target, DRY_RUN);
+      if (activationBlock) return `选失败:${activationBlock}`;
       // 【2026-07-27 修】原来直接 [...s.options] —— LLM 让 select 的目标未必真是 <select>,
       // 很多站用 div/ul 自造下拉。非 select 元素没有 .options,展开就抛
       //   TypeError: s.options is not iterable
@@ -962,12 +978,16 @@ async function actImpl(pg, a, dom) {
       if (ok.kind === 'err') return `选失败:${ok.msg}`;
       // 自造下拉:点开它,再在浮层里点包含目标文字的那一项
       try {
+        const openerBlock = await controlActivationBlockReason(el, 'click', a.target, DRY_RUN);
+        if (openerBlock) return `选失败:${openerBlock}`;
         await el.click({ timeout: 4000 });
         await pg.waitForTimeout(600);
         const opt = pg.locator(
           `[role=option], li, [class*=option], [class*=item]`
         ).filter({ hasText: new RegExp(a.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }).first();
         if (await opt.count()) {
+          const optionBlock = await controlActivationBlockReason(opt, 'click', a.value, DRY_RUN);
+          if (optionBlock) return `选失败:${optionBlock}`;
           await opt.click({ timeout: 4000 });
           await pg.waitForTimeout(500);
           return `已选 ${a.value}(自造下拉)`;
@@ -1064,7 +1084,15 @@ async function actImpl(pg, a, dom) {
         e.queued = _q;
         throw e;
       }
-      const ua = STEALTH_UA;
+      const ua = BROWSER_UA || await pg.evaluate(() => navigator.userAgent).catch(() => '');
+      if (!/Windows/i.test(ua)) {
+        const _q = queueForHuman(dom, 'cf_challenge',
+          `Ego Browser 当前 UA 不是 Windows,CapSolver AntiCloudflareTask 不接受该 UA。请人工过挑战页。`);
+        const e = new Error('Ego Browser 当前 UA 不兼容 AntiCloudflareTask,按 manual 处理');
+        e.noSolver = true;
+        e.queued = _q;
+        throw e;
+      }
       // AntiCloudflareTask 必须从**我们的出口**去解题:
       // cf_clearance 绑定 IP+UA,CapSolver 用自己机房 IP 解出来的票对我们无效。
       // 给它配同一个代理(--proxy / HTTPS_PROXY),让它借我们的出口。
@@ -1388,6 +1416,10 @@ async function findSitekey(pg) {
 // $(...) 与反引号会被求值(已实测复现),NUL 字节还会直接炸掉整条命令(_task4.log:120)。
 // 现全部改走 dbw:node:sqlite 真参数绑定,不起 shell,并带状态迁移守卫。
 function upsert(dom, status, evidence, note = '', opts = {}) {
+  if (DRY_RUN) {
+    console.log(`[${dom}] [dry-run] 不写状态 ${status}: ${String(evidence || '').slice(0, 100)}`);
+    return { written: false, from: null, to: status, dryRun: true };
+  }
   // 【07-31 实证】与采集/复核波并发时,锁持有可超 dbw 的 30s busy_timeout,写库失败只打
   // 一行日志就丢账(32 高相关批 13 站无记录,含 4 个 pending_review 成功单)。终局写是
   // 账本,撞锁必须重试到进;非锁错误照旧快速失败。
@@ -1429,6 +1461,7 @@ function upsert(dom, status, evidence, note = '', opts = {}) {
 // 认领写失败 = 账本不可用,fail-closed:不派发动作,upsert 抛 e.ledger 走 exit 43。
 let SUBMIT_DISPATCHED = false;
 function claimDelivery(dom, detail) {
+  if (DRY_RUN) return false;
   let lastErr = null;
   for (let i = 0; i < 6; i++) {
     try {
@@ -1463,6 +1496,7 @@ async function dispatchClickOnce(el) {
 
 // 语义分层:提交入口 404/无表单 = 站不收件(不可用),不是"卡住可重试"——出池标 no(三处写入点共用)
 function markUnusableIf404(dom, status, reason) {
+  if (DRY_RUN) return false;
   if (status !== 'blocked' || !/404|not.?found|不存在|无表单|无可用.{0,4}入口|无提交入口/i.test(reason || '')) return false;
   // 【2026-07-29】「卡流程」不是「站不收件」:relateddirectory.org 因判词里带"无表单
   // 控件可继续操作"(其实是打码没过的中间页状态)被误踢出池(link_directories=no +
@@ -1483,8 +1517,9 @@ function markUnusableIf404(dom, status, reason) {
 
 // ---------- 站点 recipe(成功一次,沉淀打法,下次快进;存 recipes.json,见 state.mjs) ----------
 function initRecipes() { /* 开源版 JSON 存储,无需建表 */ }
-function loadRecipe(dom) { return dbw.loadRecipe(dom); }
+function loadRecipe(dom) { return DRY_RUN ? null : dbw.loadRecipe(dom); }
 function saveRecipe(dom, recipe, status, notes) {
+  if (DRY_RUN) return;
   try {
     dbw.saveRecipe(dom, recipe, status, notes);
   } catch (e) {
@@ -1593,7 +1628,9 @@ async function replayRecipe(pg, dom, recipe) {
 // 的 <loc> 内容**当 URL 传进来 —— 那是外站完全可控的字符串,`$(...)`/反引号会被求值。
 // execFileSync 直接把参数交给 curl,不经 shell;并加一道协议白名单。
 // recon 抓页面也用同一个 UA:同一个域先后出现两种 UA 本身就是破绽
-const CURL_UA = STEALTH_UA;
+const CURL_UA = process.env.SUBMIT_UA ||
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
 // 【08-11 五轮评审 P1-3】不再 curl -L 盲跟:逐跳取 redirect_url,每一跳先过出站闸
 // (协议/userinfo/内网 IP 字面量)再连。findEntry 会把远端 sitemap <loc>、LLM 给的
 // URL 传进来 —— 全是外站可控字符串。
@@ -1733,7 +1770,9 @@ ${stories || '(无)'}
 博主更愿通过、更可能回复,评论有了互动才算活链,别交一锤子死评论。`;
 }
 
-const SYSTEM = `你是目录站提交代理,目标:把产品 ${PNAME} 提交进当前网站。${process.env.RESCUE_CONTEXT ? `
+const SYSTEM = `你是目录站提交代理,目标:把产品 ${PNAME} 提交进当前网站。${DRY_RUN ? `
+【dry-run 证明模式】只观察并执行不产生投递的页面动作。可以填字段、选择、滚动或等待,
+但禁止提交、注册、消费验证邮件、求解/注入验证码。代码还会二次硬拦截这些动作。` : ''}${process.env.RESCUE_CONTEXT ? `
 【救援模式(08-06 用户令)】该站上轮投放失败,败因:${process.env.RESCUE_CONTEXT}
 你的任务不是重复上轮动作,而是:①先判断败因属于哪类(找错页/要注册/验证码/付费墙/JS表单未渲染/类目不符);
 ②找能成功的路径——换提交入口(/submit、/add、页脚链接、注册后提交)、register 注册、email_otp 收码、
@@ -1785,8 +1824,10 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
 - **JS 渲染表单(08-06 排期)**:滚到底仍无控件时,先 reveal_form(自动找「写评论/Comment/Reply」触发器点击挂载)再判死;
   一次 reveal 没出控件可再换一个触发器,两次仍无才 giveup` + cvBlock();
 
-(async () => {
+export const AGENT_RUN = (async () => {
   const target = process.argv[2];
+  if (!target || target.startsWith('--')) throw new Error('用法:node agent_submit.mjs <域名或URL> [--steps N] [--dry-run]');
+  if (DRY_RUN) console.log('[dry-run] 证明模式:允许观察/填充等本地页面动作,硬拦提交与其它外部副作用,不写状态');
   // 【08-08 实证】主循环内的预算检查挡不住「单个 await 挂死」(page.goto/evaluate
   // 不返回时循环永远不转,legrand-jp/winebooks 挂 54-65 分钟实证)。
   // 独立看门狗:MAX_MINUTES+2 分钟到点无条件强退,不依赖任何异步状态。
@@ -1862,7 +1903,7 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
     killBrowserSync();                 // exit() 会跳过 finally,这里同步收
     process.exit(process.exitCode || 2);
   }, WATCHDOG_PLAN.triggerMs).unref();
-  const useCdp = process.argv.includes('--cdp');
+  const useCdp = true;   // Ego Browser 提供受控真实浏览器与登录态
   const si = process.argv.indexOf('--steps');
   const maxSteps = si > 0 ? +process.argv[si + 1] : 24;
   // 【08-11 八轮评审 P2-1b 修】显式 URL 场景改用 new URL() 取 hostname:正则切串不剥端口、
@@ -1909,7 +1950,7 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
   // 500 是暂时故障、OAuth 可能被人工登录破局、badge 取决于产品策略,
   // 所以每条约束都有 expires_at,过期自动重试,不会把站永久钉死(那是 graveyard 的活)。
   advisory = [];                // 不短路、但要告诉 LLM 的约束(如"邮件通道已死")
-  if (!process.argv.includes('--ignore-constraints')) {
+  if (!DRY_RUN && !process.argv.includes('--ignore-constraints')) {
     try {
       const all = dbw.activeConstraints(dom);
       // ⚠️ 只有 CONSTRAINT_STATUS 里显式列出的才短路整站。
@@ -1973,100 +2014,51 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
   RUN_STARTED = new Date(t0).toLocaleString('sv-SE');   // 'YYYY-MM-DD HH:MM:SS' 本地时,给 emailOtp 的 --since 用
   deferMark(dom);   // 本 run 期间该域验证信由浏览器接管(sweeper 见 run/agent_defer 只校验不点开,TTL 20min)
   let captchaN = 0, retreatHinted = false;
-  const pgRef = {};            // CDP 模式:agent 自己的页面引用,弹窗治理要豁免它
-  let browser, ctx;
-  if (useCdp) {
-    browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-    ctx = browser.contexts()[0];
-    // 弹广告治理:非目标域的新标签页自动关(OAuth 跳转的 google 域放行)
-    ctx.on('page', async (p) => {
-      try {
-        if (pgRef.p && p === pgRef.p) return;            // 【2026-07-30】agent 自己的页面,别误杀
-        await p.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => {});
-        const u = p.url();
-        if (u === 'about:blank') return;                 // 刚创建还没导航 —— 上次连自己的首页都杀了
-        if (!u.includes(dom) && !/google\.com|googleapis\.com|gstatic\.com|accounts\.google/i.test(u)) {
-          await p.close();
-          console.log(`[${dom}] 关掉弹窗标签:${u.slice(0, 60)}`);
-        }
-      } catch {}
-    });
-  } else {
-    // 代理:--proxy 参数 > HTTPS_PROXY 环境变量 > 直连。
-    // ⚠️ 用 cf_challenge 时出口必须与解题出口一致:cf_clearance 绑定 IP+UA。
-    const proxyUrl = publicProxyUrl();
-    if (proxyUrl) console.log(`[${dom}] 走代理 ${String(proxyUrl).replace(/\/\/.*@/, '//***@')}`);
-    // 浏览器解析:CHROME_BIN 指定 > 本机 Chrome(channel) > playwright 管理的 chromium。
-    const LAUNCH_ARGS = [
-      // 这两条是 headless Chrome 最明显的自动化痕迹
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=IsolateOrigins,site-per-process',
-      '--lang=en-US,en',
-    ];
-    const launchOpts = {
-      headless: !process.argv.includes('--show'),
-      args: LAUNCH_ARGS,
-      // Playwright 不接受 URL 里内嵌的账号密码,要拆开传
-      ...(proxyUrl ? { proxy: parseProxy(proxyUrl) } : {}),
-    };
-    if (process.env.CHROME_BIN) {
-      browser = await chromium.launch({ ...launchOpts, executablePath: process.env.CHROME_BIN });
-    } else {
-      try {
-        browser = await chromium.launch({ ...launchOpts, channel: 'chrome' });
-      } catch (e) {
-        console.log(`[${dom}] 本机 Chrome 不可用(${String(e.message).slice(0, 60)}),`
-          + `退回 playwright 管理的 chromium(先 npx playwright install chromium)`);
-        browser = await chromium.launch(launchOpts);
+  const pgRef = {};            // agent 自己的页面引用,弹窗治理要豁免它
+  const ego = await createEgoBrowser(EGO_HELPERS, { taskName: EGO_TASK_SPACE });
+  const browser = ego.browser;
+  const ctx = ego.context;
+  console.log(`[ego] 使用 task space ${ego.task.name}(${ego.task.id})`);
+
+  // 弹广告治理:非目标域的新标签页自动关,OAuth 跳转域放行。
+  ctx.on('page', async (p) => {
+    try {
+      if (pgRef.p && p === pgRef.p) return;
+      await p.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => {});
+      const u = p.url();
+      if (u === 'about:blank') return;
+      if (!u.includes(dom) && !/google\.com|googleapis\.com|gstatic\.com|accounts\.google/i.test(u)) {
+        await p.close();
+        console.log(`[${dom}] 关掉弹窗标签:${u.slice(0, 60)}`);
       }
-    }
-    ctx = await browser.newContext({
-      viewport: { width: 1280, height: 960 },
-      userAgent: STEALTH_UA,
-      extraHTTPHeaders: {
-        'Accept-Language': 'en-US,en;q=0.9',
-        'sec-ch-ua': '"Chromium";v="126", "Google Chrome";v="126", "Not-A.Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',   // 必须与 STEALTH_UA 一致,打架比不设更容易被识破
-        'Upgrade-Insecure-Requests': '1',
-      },
-      locale: 'en-US',
-      timezoneId: 'America/Los_Angeles',   // 与 en-US 自洽
-      deviceScaleFactor: 1,
-      isMobile: false,
-      hasTouch: false,
-      colorScheme: 'light',
-    });
-    await ctx.addInitScript(stealthInit);
-    // 【08-13 流量治理】机场实测日耗 57-94GB(账单实证,不是我先估的 10GB)——
-    // 主犯是整页渲染的图片/视频广告/字体。按 resourceType 整类拦(无扩展名的流也跑不掉),
-    // stylesheet 不拦(布局崩了字段定位全废)。预期省 70-85%。
-    await ctx.route('**/*', (r) => {
-      const t = r.request().resourceType();
-      if (t === 'image' || t === 'media' || t === 'font') return r.abort();
-      const u = r.request().url();
-      if (/(googlesyndication|doubleclick|googletagmanager|google-analytics|facebook\.net|adsystem|adservice|scorecardresearch|hotjar|clarity\.ms)/i.test(u)) return r.abort();
-      return r.continue();
-    });
-    // 【08-03 事故护栏】mailto: 点击会唤起 macOS 邮件客户端,把草稿窗口弹到用户屏幕上。
-    // prompt 里禁止过仍被点(buzz4ai/earthlink 实证),这里 DOM 层硬拦:捕获阶段截停,
-    // href 里的邮箱地址照样可读(needs_outreach 归因不受影响)。
-    await ctx.addInitScript(() => {
-      document.addEventListener('click', (e) => {
-        const a = e.target && e.target.closest && e.target.closest('a[href^="mailto:"]');
-        if (a) { e.preventDefault(); e.stopPropagation(); }
-      }, true);
-    });
-  }
-  curBrowser = useCdp ? null : browser;   // CDP 连的是用户浏览器,不登记也不杀
+    } catch {}
+  });
+
+  // 流量治理在 Ego 当前 tab 上走 CDP Fetch,不启动任何 Playwright 浏览器进程。
+  await ctx.route('**/*', (r) => {
+    if (DRY_RUN && !isDryRunSafeMethod(r.request().method())) return r.abort();
+    const t = r.request().resourceType();
+    if (t === 'image' || t === 'media' || t === 'font') return r.abort();
+    const u = r.request().url();
+    if (/(googlesyndication|doubleclick|googletagmanager|google-analytics|facebook\.net|adsystem|adservice|scorecardresearch|hotjar|clarity\.ms)/i.test(u)) return r.abort();
+    return r.continue();
+  });
+  if (DRY_RUN) await ctx.addInitScript(installDryRunFormGuard);
+  // mailto 护栏继续在每个新文档加载前注入。
+  await ctx.addInitScript(() => {
+    document.addEventListener('click', (e) => {
+      const a = e.target && e.target.closest && e.target.closest('a[href^="mailto:"]');
+      if (a) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+  });
+
+  curBrowser = null;   // Ego Lite 是 captain 的共享实例,看门狗绝不结束其进程
   let pg = await ctx.newPage();
+  BROWSER_UA = BROWSER_UA || await pg.evaluate(() => navigator.userAgent).catch(() => '');
   curPg = pg;                  // 登记当前页,queueForHuman 等模块级函数取 URL 用
   pgRef.p = pg;                // 登记自己,弹窗治理豁免(CDP 模式下才有意义)
   // OAuth 弹窗接管的基线:开跑时已有的 tab 都不算弹窗(用户的 Gmail、上次 run 的残页)
   const pagesAtStart = new Set(useCdp ? ctx.pages() : []);
-  // 【2026-07-30】CDP 模式收官自清:browser.close() 只是断开连接,run 开的 tab 全留着,
-  // 59 站批量就堆上百个 tab(用户发现)。退出点统一调用,只关本 run 新开的,
-  // pagesAtStart 里用户自己的 tab 一个不动。
   const closeCdpTabs = async () => {
     if (!useCdp) return;
     for (const p of ctx.pages()) {
@@ -2151,7 +2143,7 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
     }
     // ---- recipe 快放:有沉淀打法先走捷径 ----
     initRecipes();
-    const recipe = process.argv.includes('--fresh') ? null : loadRecipe(dom);
+    const recipe = DRY_RUN || process.argv.includes('--fresh') ? null : loadRecipe(dom);
     if (recipe && recipe.steps) {
       console.log(`[${dom}] 有 recipe(${recipe.steps.length}步),快放…`);
       const rp = await replayRecipe(pg, dom, recipe);
@@ -2211,8 +2203,10 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
         if (badgeR && badgeR.blockedRegression) {
           console.error(`[${dom}] DELIVERY_AMBIGUOUS 要回链站判定被守卫拦下(投递认领在先),终局停 ${badgeR.to},原地交 LLM 观察流,不记 badge 约束`);
         } else {
-          try { dbw.addConstraint({ domain: dom, reason_code: 'badge_required',
-                                    evidence: '要回链站(机械识别)', ttl_days: 3650 }); } catch {}
+          if (!DRY_RUN) {
+            try { dbw.addConstraint({ domain: dom, reason_code: 'badge_required',
+                                      evidence: '要回链站(机械识别)', ttl_days: 3650 }); } catch {}
+          }
           console.log(`[${dom}] 机械识别:要回链站 → skipped_badge 短路`);
           await closeCdpTabs();
   await browser.close();
@@ -2298,7 +2292,7 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
       // ⚠️ 只接管**本次 run 开跑后**新开的 tab:用户在受控浏览器里常挂着 Gmail/
       // myaccount 等旧 tab,连上次 run 的 OAuth 残页也在 —— 不区分的话会把 run
       // 劫到 Gmail 收件箱去(实证)。起跑时快照了 pagesAtStart。
-      if (useCdp) {
+      if (useCdp && !DRY_RUN) {
         try {
           if (pg.isClosed()) {
             pg = ctx.pages().find(p => !p.isClosed() && p.url().includes(dom)) || ctx.pages()[0];
@@ -2332,6 +2326,7 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
         } catch {}
       }
       const obs = await observe(pg);
+      console.log(`[${dom}] S${step} observe ${obs.url.slice(0, 100)} | inputs=${obs.inputs.length} buttons=${obs.buttons.length}`);
       // JS 重载闸(08-12):renderer 持续满转 3 步,提前收工
       if (await jsBusySample() >= JS_BUSY_LIMIT) {
         verdict = { status: 'blocked', reason: `页面 JS 满载(renderer 连续 ${jsBusyStreak} 步满转),提前放弃` };
@@ -2346,6 +2341,7 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
       ]);
       let a;
       try { a = JSON.parse(reply); } catch { log.push(`S${step}:LLM 输出非 JSON`); continue; }
+      console.log(`[${dom}] S${step} decide ${String(a.action || 'unknown')} ${String(a.target || '').slice(0, 80)}`);
       if (a.action === 'done') { verdict = { status: a.result || 'blocked', reason: a.reason || '' }; log.push(`S${step}:done→${verdict.status}(${verdict.reason})`); break; }
       // 【2026-07-26 修】giveup 一直写在 SYSTEM 的合法动作表里,但主循环只认 done ——
       // LLM 想放弃时掉进"未知动作"继续空转到步数上限。现在收紧 emailed 定义后
@@ -2360,6 +2356,11 @@ desc_short / desc_mid / desc_long(三种长度描述,按字段要求选)/ tags(�
       const r = await act(pg, a, dom);
       log.push(`S${step}:${a.action} ${a.target || ''}→${r.text}`);
       console.log(`[${dom}] S${step} ${a.action} ${a.target || ''} → ${r.text}`);
+      if (DRY_RUN && r.text.startsWith('[dry-run]')) {
+        verdict = { status: 'blocked', reason: `dry-run 证明已在外部副作用前停止:${r.text}` };
+        log.push(`S${step}:dry-run 安全停止`);
+        break;
+      }
       // 【08-11 十二轮评审 P2-3】single-shot 教义:提交类动作被"已认领禁二击"
       // 拦下时(act 返回拒点文案),不再让 LLM 换着花样点第三次 —— 现场观察
       // 一次页面:见到回执抬 success/pending_review,否则收 delivery_ambiguous

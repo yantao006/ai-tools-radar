@@ -167,12 +167,95 @@ const ss = await import('../submission_safety.mjs');
 await t('回执分类', () => { if (ss.classifyReceiptText('Your submission has been received') !== 'success') throw new Error('回执判不出'); });
 await t('回执否定优先', () => { if (ss.classifyReceiptText('Your submission was not received') !== null) throw new Error('否定句未过滤'); });
 await t('hasSubmitVerb', () => { if (!ss.hasSubmitVerb('Submit')) throw new Error('x'); });
+await t('控件激活统一拦截', () => {
+  const submit = { tagName: 'INPUT', type: 'submit', text: 'Post Comment' };
+  if (!ss.activationBlockReason(submit, 'fill')) throw new Error('fill 可激活 submit');
+  if (!ss.activationBlockReason(submit, 'select')) throw new Error('select 可激活 submit');
+  if (!ss.activationBlockReason(submit, 'click', '', true)) throw new Error('dry-run click 可激活 submit');
+  if (!ss.activationBlockReason({ tagName: 'A', href: '#comments', hasHref: true }, 'click', 'Reply', true)) throw new Error('dry-run reply 可激活');
+  if (ss.activationBlockReason({ tagName: 'INPUT', type: 'text' }, 'fill')) throw new Error('普通字段被拦');
+});
 const wd = await import('../wall_detect.mjs');
 await t('hostAllowed 拒外域', () => { if (wd.hostAllowed('evil.com', 'x.com')) throw new Error('未拦'); });
 await t('inferConstraint', () => wd.inferConstraint('skipped_paid', ''));
 const rt = await import('../agent_submit_runtime.mjs');
 await t('makeWatchdogPlan 钳制', () => { if (rt.makeWatchdogPlan(20, 30000).triggerMs >= 20 * 60000) throw new Error('未按硬杀预算钳住'); });
 await t('actionResult', () => rt.normalizeActionResult('x'));
+await t('dry-run 拦外部副作用', () => {
+  if (!rt.dryRunBlockReason({ action: 'click', target: 'Submit' }, { submitClass: true })) throw new Error('submit 未拦');
+  if (!rt.dryRunBlockReason({ action: 'captcha_turnstile' })) throw new Error('captcha 未拦');
+  if (!rt.dryRunBlockReason({ action: 'register' })) throw new Error('register 未拦');
+  if (rt.dryRunBlockReason({ action: 'fill', target: 'i0' })) throw new Error('fill 被误拦');
+  if (rt.isDryRunSafeMethod('POST') || !rt.isDryRunSafeMethod('GET')) throw new Error('请求方法护栏错误');
+});
+await t('dry-run 表单提交 fail-closed', () => {
+  let listener;
+  let submitted = 0;
+  function Form() {}
+  Form.prototype.submit = () => { submitted++; };
+  Form.prototype.requestSubmit = () => { submitted++; };
+  const scope = { HTMLFormElement: Form, document: { addEventListener: (_type, fn) => { listener = fn; } } };
+  if (!rt.installDryRunFormGuard(scope)) throw new Error('表单护栏未安装');
+  new Form().submit();
+  new Form().requestSubmit();
+  let prevented = 0;
+  listener({ preventDefault: () => { prevented++; }, stopImmediatePropagation: () => {} });
+  if (submitted || prevented !== 1) throw new Error('表单提交未被硬拦截');
+});
+const egoAdapter = await import('../ego_browser_adapter.mjs');
+await t('Ego 环境桥最小化', () => {
+  const env = egoAdapter.egoEnvironment({ LLM_CONFIG: '/tmp/llm.json', LLM_API_KEY: 'secret', AWS_SECRET_ACCESS_KEY: 'drop', CHROME_BIN: 'drop' });
+  if (env.LLM_CONFIG !== '/tmp/llm.json' || env.LLM_API_KEY !== 'secret') throw new Error('LLM 配置未桥接');
+  if (env.AWS_SECRET_ACCESS_KEY || env.CHROME_BIN) throw new Error('无关或禁用环境被桥接');
+});
+await t('Ego adapter 复用 task space', async () => {
+  const existing = { targetId: 'user-tab', url: 'https://mail.example.com/', active: true };
+  const tabs = [existing];
+  let selected = '';
+  const cdpTargets = [];
+  const closedTargets = [];
+  const helpers = {
+    useOrCreateTaskSpace: async (name) => { selected = name; return { id: 1, name }; },
+    listTabs: async () => tabs,
+    ensureRealTab: async () => existing,
+    openOrReuseTab: async (url) => {
+      const tab = { targetId: 'agent-tab', url, active: false };
+      tabs.push(tab);
+      return tab;
+    },
+    switchTab: async (targetId) => {
+      for (const tab of tabs) tab.active = tab.targetId === targetId;
+    },
+    closeTab: async (targetId) => { closedTargets.push(targetId); },
+    pageInfo: async () => ({ url: tabs.find((tab) => tab.active).url }),
+    drainEvents: async () => [],
+    cdp: async (method) => {
+      cdpTargets.push([method, tabs.find((tab) => tab.active).targetId]);
+      if (method === 'Target.getTargets') {
+        return { targetInfos: tabs.map((tab) => ({
+          targetId: tab.targetId,
+          openerId: tab.openerId || '',
+        })) };
+      }
+      return method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f1' } } } : {};
+    },
+  };
+  const ego = await egoAdapter.createEgoBrowser(helpers, { taskName: 'seedream-outreach' });
+  await ego.context.route('**/*', (route) => route.continue());
+  const page = await ego.context.newPage();
+  if (selected !== 'seedream-outreach' || page.targetId !== 'agent-tab') throw new Error('未创建专用标签页');
+  if (ego.context.pages().length !== 1 || ego.context.pages()[0].targetId !== 'agent-tab') throw new Error('既有标签页被 context 接管');
+  if (cdpTargets.some(([, targetId]) => targetId === 'user-tab')) throw new Error('路由触碰既有标签页');
+  tabs.push(
+    { targetId: 'user-late', url: 'https://notes.example.com/', active: false },
+    { targetId: 'agent-popup', openerId: 'agent-tab', url: 'https://accounts.example.com/', active: false },
+  );
+  await page.waitForTimeout(1);
+  const owned = ego.context.pages().map((item) => item.targetId).sort();
+  if (owned.join(',') !== 'agent-popup,agent-tab') throw new Error(`运行中新页所有权错误:${owned.join(',')}`);
+  await ego.browser.close();
+  if (closedTargets.sort().join(',') !== 'agent-popup,agent-tab') throw new Error('自有标签页未被独占回收');
+});
 const rd = await import('../rootdomain.mjs');
 await t('rootDomain(PSL)', () => { if (rd.rootDomain('a.b.example.co.uk') !== 'example.co.uk') throw new Error('得到 ' + rd.rootDomain('a.b.example.co.uk')); });
 const cs = await import('../capsolver.mjs');

@@ -57,8 +57,10 @@ blocked/failed）、站点约束 TTL、成功打法沉淀 recipe 下次快放。
 4. **persona 身份**：`cp identities.example.json identities.json`，换成你的投放
    身份（姓名 + gmail 等中性域邮箱）。agent 按域 hash 固定抽取（同域稳定、跨域
    轮换），裸跑会被 Akismet 跨站签名烧域；
-5. **浏览器**：`npm install` + 本机有 Chrome，或 `CHROME_BIN` 指一个
-   Chrome/Chromium，或 `npx playwright install chromium`。
+5. **浏览器**：安装并完成 Ego Lite onboarding，确认 `ego-browser nodejs` 可用。
+   提交代理固定复用 `seedream-outreach` 隔离 task space，名称不可覆盖。
+   `agent_submit.mjs` 不启动 Chrome 或 Playwright Chromium。
+   `npm install` 仍需执行，因为独立终核器 `verify_link.mjs` 保留 `playwright-core`。
 
 可选增强：
 
@@ -67,14 +69,15 @@ blocked/failed）、站点约束 TTL、成功打法沉淀 recipe 下次快放。
   **fail-closed**（账本读不出来就拒绝新建付费任务，不是当零花销放行）。
   两个 key 配任意一个即可：只配 `twocaptcha_key` 时直接走 2Captcha，
   两个都配时 capsolver 优先、终态错误自动降级 2Captcha；一个都没配才标 `manual` 转人工；
-- `HTTPS_PROXY`：出站代理。⚠️ 用 Cloudflare 整页挑战解题时必须配——
-  `cf_clearance` 绑定 IP+UA，浏览器和解题必须同一出口。
+- `HTTPS_PROXY` / `--proxy`：只提供给代码侧网络请求和验证码服务。
+  Ego Lite 的浏览器出口由 Ego 自己管理。
+  Cloudflare 整页挑战要求浏览器与解题服务使用相同出口和 UA，否则转 `manual`，不硬试。
 
 ## 用法
 
 ```bash
 cd outreach
-npm install                                  # playwright-core
+npm install                                  # verify_link.mjs 仍需 playwright-core
 pip install agentmail curl_cffi            # mail_sweeper 收信/点链依赖(两条腿共用)
 
 python3 configure.py                         # 配 LLM 端点 + 打码/收信 key(带实测按钮)
@@ -84,7 +87,7 @@ cp kit.example.json kit.json                 # 填你的产品资料(红线文�
 cp identities.example.json identities.json   # 填你的 persona 池
 
 python3 targets.py                           # 生成 worklist.jsonl(tier1 提交页优先)
-node agent_submit.mjs https://某站/submit --steps 2   # 单站干跑验证装载
+node agent_submit.mjs https://某站/submit --steps 2 --dry-run # Ego 单站证明,硬拦提交且不写状态
 python3 driver.py --limit 5                  # 先 5 个亲眼验证
 python3 driver.py --limit 50                 # 没问题再放量
 python3 mail_sweeper.py --dry-run            # 先演一遍判定质量
@@ -156,7 +159,8 @@ node verify_link.mjs example.com               # 指定域
 
 | 文件 | 生产对应 | 说明 |
 |---|---|---|
-| `agent_submit.mjs` | node-tools/agent_submit.js | 观察-决策-执行主循环 + 三条红线 |
+| `agent_submit.mjs` | node-tools/agent_submit.js | 观察-决策-执行主循环 + 三条红线，live submit 只走 Ego |
+| `ego_browser_adapter.mjs` | （开源版新增） | `ego-browser nodejs` helper 到 Page-like API 的适配层，不启动浏览器进程 |
 | `state.mjs` / `state.py` | node-tools/dbw.js / scripts/dbwpy.py | SQLite → JSONL 账本，守卫语义逐条对齐 |
 | `submission_safety.mjs` | node-tools/submission_safety.js | 提交类控件判定 + 回执分类 |
 | `agent_submit_runtime.mjs` | node-tools/agent_submit_runtime.js | 动作结果结构化 + 看门狗预算 |
@@ -190,8 +194,9 @@ node verify_link.mjs example.com               # 指定域
 
 **未包含（私有基建，不带）**：代理节点池轮换（mihomo/Surge，本机 7891/8234）、
 CF 签名站的住宅出口重投与 cloak 指纹内核救援（依赖私有二进制和家庭宽带出口）、
-远程核验模式（VERIFY_JOB）。这些与你的网络环境强绑定，开源版用 `HTTPS_PROXY`
-单代理替代；CF 挑战多的话自己配静态住宅代理。
+远程核验模式（VERIFY_JOB）。
+这些与你的网络环境强绑定。
+浏览器出口由 Ego Lite 管理，代码侧 HTTP 与验证码服务可认 `HTTPS_PROXY`。
 
 **mail_sweeper 侧同样有没带过来的东西**（都是 `try/except` 包着的可选依赖，缺了不影响
 主流程，但要知道它们是哑的）：
@@ -248,7 +253,7 @@ Python 侧显式绕开了代理，否则设了代理的机器上「本机 Ollama
 bash tests/smoke.sh
 ```
 
-改这个目录里的任何代码，前后都跑它：语法 / Python 关键路径 29 项 / Node 关键路径 47 项 /
+改这个目录里的任何代码，前后都跑它：语法 / Python 关键路径 30 项 / Node 关键路径 50 项 /
 配置解析 py-js 对拍 43 组 + 7 组共享常量 + 7 组重定向同源 / 12 进程并发认领（断言恰好 1 个成功）。
 
 **"语法过 + import 过"不算回归。** 这个脚本存在的原因是：曾经整段替换函数时连带删掉了
@@ -286,6 +291,6 @@ bash tests/smoke.sh
 - `pending_review` ≠ 上线：目录站审核 1-4 周，收录率本质低（我们私有库实测
   ~1% 终核上线），这个工具的价值是把"找到哪里能投+投出去"的成本降到零，
   转化靠持续投；
-- 反检测件（抹 webdriver/逐字打字/流量治理）能降低被拦率，但不是隐身衣；
-  Cloudflare 整页挑战要 capsolver + 代理同出口才有机会；
+- Ego Lite 提供真实浏览器环境，代理仍保留逐字输入和流量治理，但这不是隐身衣；
+  Cloudflare 整页挑战要求验证码服务与 Ego 使用同出口、同 UA，否则转人工；
 - 跑之前想清楚：批量提交目录站在某些站的 ToS 里是灰色地带，后果自负。

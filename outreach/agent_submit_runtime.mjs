@@ -30,6 +30,38 @@ export function shouldTrackSubmitNoDelta(result) {
   return Boolean(result && result.submitClass && result.dispatched);
 }
 
+/**
+ * Return a reason when dry-run must refuse an action that could create an external side effect.
+ * Ordinary observation, navigation, filling, selection, scrolling, waiting, and upload remain usable.
+ */
+export function dryRunBlockReason(action, options = {}) {
+  const kind = String(action && action.action || action || '').toLowerCase();
+  const target = String(options.target == null ? action && action.target || '' : options.target);
+  if (/^captcha/.test(kind) || kind === 'cf_challenge') return '验证码求解/注入';
+  if (kind === 'register' || kind === 'fork_account') return '注册或账号变更';
+  if (kind === 'email_otp') return '验证码邮件或验证链接消费';
+  if (kind === 'click' && (options.submitClass || /submit|提交|发送|\bsend\b|\bpublish\b|\bpost it\b/i.test(target))) {
+    return '提交类点击';
+  }
+  return null;
+}
+
+export function isDryRunSafeMethod(method) {
+  return /^(GET|HEAD|OPTIONS)$/i.test(String(method || 'GET'));
+}
+
+export function installDryRunFormGuard(scope = globalThis) {
+  const proto = scope.HTMLFormElement && scope.HTMLFormElement.prototype;
+  if (!proto) return false;
+  scope.document.addEventListener('submit', (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  proto.submit = function submit() {};
+  proto.requestSubmit = function requestSubmit() {};
+  return true;
+}
+
 export function makeWatchdogPlan(maxMinutes, busyTimeoutMs) {
   const minutes = Number(maxMinutes);
   const busy = Number(busyTimeoutMs);

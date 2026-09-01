@@ -593,7 +593,7 @@ class EgoContext {
   }
 
   async cleanup() {
-    for (const page of this.pages()) await page._cleanup();
+    for (const page of this.pages()) await page.close().catch(() => {});
   }
 }
 

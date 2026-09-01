@@ -213,6 +213,7 @@ await t('Ego adapter 复用 task space', async () => {
   const tabs = [existing];
   let selected = '';
   const cdpTargets = [];
+  const closedTargets = [];
   const helpers = {
     useOrCreateTaskSpace: async (name) => { selected = name; return { id: 1, name }; },
     listTabs: async () => tabs,
@@ -225,7 +226,7 @@ await t('Ego adapter 复用 task space', async () => {
     switchTab: async (targetId) => {
       for (const tab of tabs) tab.active = tab.targetId === targetId;
     },
-    closeTab: async () => {},
+    closeTab: async (targetId) => { closedTargets.push(targetId); },
     pageInfo: async () => ({ url: tabs.find((tab) => tab.active).url }),
     drainEvents: async () => [],
     cdp: async (method) => {
@@ -240,6 +241,7 @@ await t('Ego adapter 复用 task space', async () => {
   if (ego.context.pages().length !== 1 || ego.context.pages()[0].targetId !== 'agent-tab') throw new Error('既有标签页被 context 接管');
   if (cdpTargets.some(([, targetId]) => targetId === 'user-tab')) throw new Error('路由触碰既有标签页');
   await ego.browser.close();
+  if (closedTargets.length !== 1 || closedTargets[0] !== 'agent-tab') throw new Error('专用标签页未被独占回收');
 });
 const rd = await import('../rootdomain.mjs');
 await t('rootDomain(PSL)', () => { if (rd.rootDomain('a.b.example.co.uk') !== 'example.co.uk') throw new Error('得到 ' + rd.rootDomain('a.b.example.co.uk')); });

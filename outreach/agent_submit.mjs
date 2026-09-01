@@ -2059,9 +2059,6 @@ export const AGENT_RUN = (async () => {
   pgRef.p = pg;                // 登记自己,弹窗治理豁免(CDP 模式下才有意义)
   // OAuth 弹窗接管的基线:开跑时已有的 tab 都不算弹窗(用户的 Gmail、上次 run 的残页)
   const pagesAtStart = new Set(useCdp ? ctx.pages() : []);
-  // 【2026-07-30】CDP 模式收官自清:browser.close() 只是断开连接,run 开的 tab 全留着,
-  // 59 站批量就堆上百个 tab(用户发现)。退出点统一调用,只关本 run 新开的,
-  // pagesAtStart 里用户自己的 tab 一个不动。
   const closeCdpTabs = async () => {
     if (!useCdp) return;
     for (const p of ctx.pages()) {

@@ -178,6 +178,7 @@ await t('dry-run 拦外部副作用', () => {
   if (!rt.dryRunBlockReason({ action: 'captcha_turnstile' })) throw new Error('captcha 未拦');
   if (!rt.dryRunBlockReason({ action: 'register' })) throw new Error('register 未拦');
   if (rt.dryRunBlockReason({ action: 'fill', target: 'i0' })) throw new Error('fill 被误拦');
+  if (rt.isDryRunSafeMethod('POST') || !rt.isDryRunSafeMethod('GET')) throw new Error('请求方法护栏错误');
 });
 const egoAdapter = await import('../ego_browser_adapter.mjs');
 await t('Ego 环境桥最小化', () => {

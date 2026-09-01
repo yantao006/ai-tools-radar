@@ -46,6 +46,10 @@ export function dryRunBlockReason(action, options = {}) {
   return null;
 }
 
+export function isDryRunSafeMethod(method) {
+  return /^(GET|HEAD|OPTIONS)$/i.test(String(method || 'GET'));
+}
+
 export function makeWatchdogPlan(maxMinutes, busyTimeoutMs) {
   const minutes = Number(maxMinutes);
   const busy = Number(busyTimeoutMs);

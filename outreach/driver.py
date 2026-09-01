@@ -20,7 +20,7 @@
 用法:
   python3 driver.py [--limit 20] [--steps 24] [--loop]
 配置:LLM 端点见 llm_config.py(LLM_BASE_URL/LLM_API_KEY/LLM_MODEL 或 llm.json,必配);
-  EGO_TASK_SPACE 可选(默认 seedream-outreach);EGO_BROWSER_BIN 指定 ego-browser CLI;
+  Ego task space 固定为 seedream-outreach;EGO_BROWSER_BIN 指定 ego-browser CLI;
   AUTHOR_URL_POOL 逗号分隔的评论作者网址池(默认只有 kit 主域)。
 """
 import hashlib
@@ -42,6 +42,7 @@ WORKLIST = HERE / "worklist.jsonl"
 STATE = Path(state.STATE_FILE)
 LOGDIR = HERE / "run" / "agent_logs"
 EGO_BROWSER = os.environ.get("EGO_BROWSER_BIN", "ego-browser")
+EGO_TASK_SPACE = "seedream-outreach"
 KIT = os.environ.get("KIT", str(HERE / "kit.json"))
 
 # agent 故意一行不写、干净退出(域留池等下轮重投)的输出标记;兜底分不清
@@ -97,8 +98,8 @@ class BudgetStop(Exception):
 
 def agent_env():
     """Build the submit child environment with Ego Browser as the only live browser."""
-    env = dict(os.environ, SUBMIT_MAX_MINUTES="10",
-               EGO_TASK_SPACE=os.environ.get("EGO_TASK_SPACE", "seedream-outreach"))
+    env = dict(os.environ, SUBMIT_MAX_MINUTES="10")
+    env.pop("EGO_TASK_SPACE", None)
     env.pop("CHROME_BIN", None)
     env.pop("PLAYWRIGHT_BROWSERS_PATH", None)
     return env
@@ -127,12 +128,12 @@ def write_ego_environment(env):
     return path
 
 
-def ego_agent_script(argv, task_space, environment_file):
+def ego_agent_script(argv, environment_file):
     """Return the stdin program executed by `ego-browser nodejs`."""
     module_url = (HERE / "agent_submit.mjs").as_uri()
     module_path = str(HERE / "agent_submit.mjs")
     return f"""
-const task = await useOrCreateTaskSpace({json.dumps(task_space)});
+const task = await useOrCreateTaskSpace({json.dumps(EGO_TASK_SPACE)});
 {{
   const fs = await import('node:fs');
   const bridged = JSON.parse(fs.readFileSync({json.dumps(str(environment_file))}, 'utf8'));
@@ -254,8 +255,7 @@ def run_site(r, steps):
         agent_args = [url, "--kit", KIT, "--steps", str(steps)]
         env_file = write_ego_environment(env)
         try:
-            source = ego_agent_script(
-                agent_args, env["EGO_TASK_SPACE"], env_file)
+            source = ego_agent_script(agent_args, env_file)
             p = subprocess.run([EGO_BROWSER, "nodejs"], input=source,
                                env=env, capture_output=True, text=True, timeout=900,
                                cwd=str(HERE))

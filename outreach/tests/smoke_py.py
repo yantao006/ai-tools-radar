@@ -56,8 +56,8 @@ def _driver_ego_env():
         env = driver.agent_env()
         if "CHROME_BIN" in env or "PLAYWRIGHT_BROWSERS_PATH" in env:
             raise AssertionError("driver leaked a forbidden browser path")
-        if env.get("EGO_TASK_SPACE") != "test-ego-space":
-            raise AssertionError("driver did not preserve the Ego task space")
+        if "EGO_TASK_SPACE" in env:
+            raise AssertionError("driver preserved an overridable Ego task space")
         bridged = driver.ego_agent_environment(env)
         if bridged.get("LLM_CONFIG") != "/tmp/llm.json" or "CHROME_BIN" in bridged:
             raise AssertionError("driver built an invalid Ego environment bridge")
@@ -69,9 +69,11 @@ def _driver_ego_env():
         try:
             if stat.S_IMODE(env_file.stat().st_mode) != 0o600:
                 raise AssertionError("Ego environment file is not 0600")
-            source = driver.ego_agent_script(["https://example.com"], "test-ego-space", env_file)
+            source = driver.ego_agent_script(["https://example.com"], env_file)
             if "fake-secret" in source:
                 raise AssertionError("Ego launcher source leaked the API key")
+            if "seedream-outreach" not in source or "test-ego-space" in source:
+                raise AssertionError("Ego task space was not fixed")
         finally:
             env_file.unlink(missing_ok=True)
     finally:

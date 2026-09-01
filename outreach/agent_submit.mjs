@@ -28,7 +28,7 @@ import {
 } from './submission_safety.mjs';
 import {
   actionResult, normalizeActionResult, dryRunBlockReason,
-  shouldObserveSubmit, shouldTrackSubmitNoDelta, makeWatchdogPlan,
+  shouldObserveSubmit, shouldTrackSubmitNoDelta, makeWatchdogPlan, isDryRunSafeMethod,
 } from './agent_submit_runtime.mjs';
 import * as credsFile from './creds.mjs';
 import * as wd from './wall_detect.mjs';
@@ -36,7 +36,7 @@ import * as og from './outbound_guard.mjs';
 import { rootDomain } from './rootdomain.mjs';
 import * as llmcfg from './llm_config.mjs';
 
-const EGO_TASK_SPACE = process.env.EGO_TASK_SPACE || 'seedream-outreach';
+const EGO_TASK_SPACE = 'seedream-outreach';
 const EGO_HELPERS = globalThis.__EGO_BROWSER_HELPERS__ || null;
 const MODULE_HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -736,19 +736,26 @@ async function revealForm(pg) {
         .filter(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)).length).catch(() => 0);
     if (now > 0) return `展开了 ${expanded} 个折叠评论容器,可见控件 ${before}→${now}`;
   }
-  const clicked = await pg.evaluate((re) => {
-    const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-    const RE = new RegExp(re, 'i');
-    const els = [...document.querySelectorAll('button,a,[role=button],input[type=submit],summary')]
-      .filter(vis);
-    for (const el of els) {
-      const t = ((el.innerText || el.value || '') + ' ' + (el.id || '') + ' ' + (el.className || '')).slice(0, 80);
-      if (RE.test(t) && !/login|sign|share|social|search/i.test(t)) {
-        el.scrollIntoViewIfNeeded?.(); el.click(); return t.trim().slice(0, 60);
-      }
+  let clicked = null;
+  const candidates = await pg.$$('button,a,[role=button],input[type=submit],summary').catch(() => []);
+  for (const el of candidates) {
+    const candidate = await el.evaluate((node, re) => {
+      const visible = !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
+      const text = ((node.innerText || node.value || '') + ' ' + (node.id || '') + ' '
+        + (node.className || '')).slice(0, 80);
+      return visible && new RegExp(re, 'i').test(text)
+        && !/login|sign|share|social|search/i.test(text) ? text.trim().slice(0, 60) : null;
+    }, TRIGGER.source).catch(() => null);
+    if (!candidate) continue;
+    if (await isSubmitClassClick(el, candidate)) {
+      if (DRY_RUN) return '[dry-run] 已拦截提交类评论触发器,未点击';
+      continue;
     }
-    return null;
-  }, TRIGGER.source).catch(() => null);
+    await el.scrollIntoViewIfNeeded().catch(() => {});
+    await el.click();
+    clicked = candidate;
+    break;
+  }
   if (!clicked) return '没找到评论触发器';
   await pg.waitForTimeout(2500);
   const after = await pg.evaluate(() =>
@@ -2013,6 +2020,7 @@ export const AGENT_RUN = (async () => {
 
   // 流量治理在 Ego 当前 tab 上走 CDP Fetch,不启动任何 Playwright 浏览器进程。
   await ctx.route('**/*', (r) => {
+    if (DRY_RUN && !isDryRunSafeMethod(r.request().method())) return r.abort();
     const t = r.request().resourceType();
     if (t === 'image' || t === 'media' || t === 'font') return r.abort();
     const u = r.request().url();

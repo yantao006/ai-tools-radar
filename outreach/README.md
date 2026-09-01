@@ -58,7 +58,7 @@ blocked/failed）、站点约束 TTL、成功打法沉淀 recipe 下次快放。
    身份（姓名 + gmail 等中性域邮箱）。agent 按域 hash 固定抽取（同域稳定、跨域
    轮换），裸跑会被 Akismet 跨站签名烧域；
 5. **浏览器**：安装并完成 Ego Lite onboarding，确认 `ego-browser nodejs` 可用。
-   提交代理固定复用 `seedream-outreach` 隔离 task space，也可用 `EGO_TASK_SPACE` 改名。
+   提交代理固定复用 `seedream-outreach` 隔离 task space，名称不可覆盖。
    `agent_submit.mjs` 不启动 Chrome 或 Playwright Chromium。
    `npm install` 仍需执行，因为独立终核器 `verify_link.mjs` 保留 `playwright-core`。
 

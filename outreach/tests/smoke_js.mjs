@@ -173,6 +173,37 @@ await t('inferConstraint', () => wd.inferConstraint('skipped_paid', ''));
 const rt = await import('../agent_submit_runtime.mjs');
 await t('makeWatchdogPlan 钳制', () => { if (rt.makeWatchdogPlan(20, 30000).triggerMs >= 20 * 60000) throw new Error('未按硬杀预算钳住'); });
 await t('actionResult', () => rt.normalizeActionResult('x'));
+await t('dry-run 拦外部副作用', () => {
+  if (!rt.dryRunBlockReason({ action: 'click', target: 'Submit' }, { submitClass: true })) throw new Error('submit 未拦');
+  if (!rt.dryRunBlockReason({ action: 'captcha_turnstile' })) throw new Error('captcha 未拦');
+  if (!rt.dryRunBlockReason({ action: 'register' })) throw new Error('register 未拦');
+  if (rt.dryRunBlockReason({ action: 'fill', target: 'i0' })) throw new Error('fill 被误拦');
+});
+const egoAdapter = await import('../ego_browser_adapter.mjs');
+await t('Ego 环境桥最小化', () => {
+  const env = egoAdapter.egoEnvironment({ LLM_CONFIG: '/tmp/llm.json', LLM_API_KEY: 'secret', AWS_SECRET_ACCESS_KEY: 'drop', CHROME_BIN: 'drop' });
+  if (env.LLM_CONFIG !== '/tmp/llm.json' || env.LLM_API_KEY !== 'secret') throw new Error('LLM 配置未桥接');
+  if (env.AWS_SECRET_ACCESS_KEY || env.CHROME_BIN) throw new Error('无关或禁用环境被桥接');
+});
+await t('Ego adapter 复用 task space', async () => {
+  const tab = { targetId: 't1', url: 'https://example.com/', active: true };
+  let selected = '';
+  const helpers = {
+    useOrCreateTaskSpace: async (name) => { selected = name; return { id: 1, name }; },
+    listTabs: async () => [tab],
+    ensureRealTab: async () => tab,
+    openOrReuseTab: async () => tab,
+    switchTab: async () => {},
+    closeTab: async () => {},
+    pageInfo: async () => ({ url: tab.url }),
+    cdp: async (method) => method === 'Page.getFrameTree'
+      ? { frameTree: { frame: { id: 'f1' } } } : {},
+  };
+  const ego = await egoAdapter.createEgoBrowser(helpers, { taskName: 'seedream-outreach' });
+  const page = await ego.context.newPage();
+  if (selected !== 'seedream-outreach' || page.url() !== tab.url) throw new Error('task/tab 未复用');
+  await ego.browser.close();
+});
 const rd = await import('../rootdomain.mjs');
 await t('rootDomain(PSL)', () => { if (rd.rootDomain('a.b.example.co.uk') !== 'example.co.uk') throw new Error('得到 ' + rd.rootDomain('a.b.example.co.uk')); });
 const cs = await import('../capsolver.mjs');

@@ -10,7 +10,7 @@ def t(name, fn):
     except Exception as e:
         res.append((False, name, f"{type(e).__name__}: {e}"))
 
-import state, dbwpy, llm_config, check_llm, read_otp  # noqa: E402
+import state, dbwpy, llm_config, check_llm, read_otp, driver  # noqa: E402
 
 t("upsert_submission",       lambda: state.upsert_submission("a.com", "pending_review", source="s"))
 t("current_status",          lambda: state.current_status("a.com")["status"])
@@ -40,6 +40,53 @@ t("llm_config.origin_of",    lambda: llm_config.origin_of("https://x.com/v1"))
 t("llm_config.mask",         lambda: llm_config.mask("sk-abcdefghijklmn"))
 t("read_otp._matches",       lambda: read_otp._matches("a.com", "x@a.com", "s"))
 t("check_llm.probe(离线)",    lambda: check_llm.probe("http://127.0.0.1:1/v1/chat/completions", "k", "m"))
+
+
+def _driver_ego_env():
+    old_chrome = os.environ.get("CHROME_BIN")
+    old_pw = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    old_task = os.environ.get("EGO_TASK_SPACE")
+    old_llm = os.environ.get("LLM_CONFIG")
+    old_here = driver.HERE
+    try:
+        os.environ["CHROME_BIN"] = "/forbidden/chrome"
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/forbidden/playwright"
+        os.environ["EGO_TASK_SPACE"] = "test-ego-space"
+        os.environ["LLM_CONFIG"] = "/tmp/llm.json"
+        env = driver.agent_env()
+        if "CHROME_BIN" in env or "PLAYWRIGHT_BROWSERS_PATH" in env:
+            raise AssertionError("driver leaked a forbidden browser path")
+        if env.get("EGO_TASK_SPACE") != "test-ego-space":
+            raise AssertionError("driver did not preserve the Ego task space")
+        bridged = driver.ego_agent_environment(env)
+        if bridged.get("LLM_CONFIG") != "/tmp/llm.json" or "CHROME_BIN" in bridged:
+            raise AssertionError("driver built an invalid Ego environment bridge")
+        from pathlib import Path
+        import stat
+        driver.HERE = Path(D) / "ego-driver"
+        env["LLM_API_KEY"] = "fake-secret"
+        env_file = driver.write_ego_environment(env)
+        try:
+            if stat.S_IMODE(env_file.stat().st_mode) != 0o600:
+                raise AssertionError("Ego environment file is not 0600")
+            source = driver.ego_agent_script(["https://example.com"], "test-ego-space", env_file)
+            if "fake-secret" in source:
+                raise AssertionError("Ego launcher source leaked the API key")
+        finally:
+            env_file.unlink(missing_ok=True)
+    finally:
+        driver.HERE = old_here
+        for key, value in (("CHROME_BIN", old_chrome),
+                           ("PLAYWRIGHT_BROWSERS_PATH", old_pw),
+                           ("EGO_TASK_SPACE", old_task),
+                           ("LLM_CONFIG", old_llm)):
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+t("driver 只传 Ego 环境", _driver_ego_env)
 
 # 审计写失败不该让已完成的状态迁移作废(js 侧有同名断言,py 侧不能少)
 def _audit_fail_keeps_state():

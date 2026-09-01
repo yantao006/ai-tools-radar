@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """driver.py — 滚动投放驱动(2026-08-16 开源版,简化自生产 rolling_submit.py)。
 
-读 worklist.jsonl(targets.py 产物),逐域调 agent_submit.mjs:
+读 worklist.jsonl(targets.py 产物),逐域调 agent_submit.mjs。agent 入口会把浏览器工作
+委托给 Ego Browser,固定复用隔离 task space,不会启动 Chrome/Chromium:
   - 每域每天最多一次(state.jsonl 当天有行即跳过);终端态
     (success/pending_review/emailed/manual/skipped_*/delivery_ambiguous/done)不再重投
   - 域间 20-40s 随机间隔(纪律:不连投)
@@ -19,7 +20,7 @@
 用法:
   python3 driver.py [--limit 20] [--steps 24] [--loop]
 配置:LLM 端点见 llm_config.py(LLM_BASE_URL/LLM_API_KEY/LLM_MODEL 或 llm.json,必配);
-  HTTPS_PROXY 可选;NODE_BIN 指定 node;
+  EGO_TASK_SPACE 可选(默认 seedream-outreach);EGO_BROWSER_BIN 指定 ego-browser CLI;
   AUTHOR_URL_POOL 逗号分隔的评论作者网址池(默认只有 kit 主域)。
 """
 import hashlib
@@ -40,7 +41,7 @@ WORKLIST = HERE / "worklist.jsonl"
 # 账本路径跟 state.py 走(它认 OUTREACH_STATE_DIR),别各写一份否则读写分叉
 STATE = Path(state.STATE_FILE)
 LOGDIR = HERE / "run" / "agent_logs"
-NODE = os.environ.get("NODE_BIN", "node")
+EGO_BROWSER = os.environ.get("EGO_BROWSER_BIN", "ego-browser")
 KIT = os.environ.get("KIT", str(HERE / "kit.json"))
 
 # agent 故意一行不写、干净退出(域留池等下轮重投)的输出标记;兜底分不清
@@ -92,6 +93,61 @@ URL_POOL = _url_pool()
 
 class BudgetStop(Exception):
     """打码日预算熔断(agent exit 42):停波,剩下的验证码域继续投只会逐个空跑。"""
+
+
+def agent_env():
+    """Build the submit child environment with Ego Browser as the only live browser."""
+    env = dict(os.environ, SUBMIT_MAX_MINUTES="10",
+               EGO_TASK_SPACE=os.environ.get("EGO_TASK_SPACE", "seedream-outreach"))
+    env.pop("CHROME_BIN", None)
+    env.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+    return env
+
+
+def ego_agent_environment(env):
+    """Keep only configuration used by the embedded Ego worker."""
+    exact = {
+        "HTTPS_PROXY", "https_proxy", "AGENT_EMAIL", "AGENTMAIL_API_KEY",
+        "AGENTMAIL_INBOX_ID", "IDENTITY_FORCE", "PYTHON_BIN", "RESCUE_CONTEXT",
+    }
+    prefixes = ("LLM_", "OPENAI_", "OUTREACH_", "SUBMIT_",
+                "CAPSOLVER_", "TWOCAPTCHA_", "AGENTMAIL_")
+    return {key: value for key, value in env.items()
+            if key in exact or key.startswith(prefixes)}
+
+
+def write_ego_environment(env):
+    """Write the embedded worker environment to a short-lived 0600 file."""
+    run_dir = HERE / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / f".ego-env-{os.getpid()}-{time.time_ns()}.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(ego_agent_environment(env), f)
+    return path
+
+
+def ego_agent_script(argv, task_space, environment_file):
+    """Return the stdin program executed by `ego-browser nodejs`."""
+    module_url = (HERE / "agent_submit.mjs").as_uri()
+    module_path = str(HERE / "agent_submit.mjs")
+    return f"""
+const task = await useOrCreateTaskSpace({json.dumps(task_space)});
+{{
+  const fs = await import('node:fs');
+  const bridged = JSON.parse(fs.readFileSync({json.dumps(str(environment_file))}, 'utf8'));
+  Object.assign(process.env, bridged);
+}}
+globalThis.__EGO_BROWSER_HELPERS__ = {{
+  useOrCreateTaskSpace, ensureRealTab, openOrReuseTab, listTabs, switchTab, closeTab,
+  gotoAndWait, pageInfo, waitForLoad, click, fillInput, typeText, uploadFile,
+  js, cdp, drainEvents
+}};
+process.argv.splice(0, process.argv.length, process.execPath, {json.dumps(module_path)}, ...{json.dumps(argv)});
+const agent = await import({json.dumps(module_url)} + '?ego=' + Date.now());
+await agent.AGENT_RUN;
+cliLog('[ego] task space ' + task.name + ' completed this agent run');
+"""
 
 
 def load_state():
@@ -183,7 +239,9 @@ def pick_batch(limit):
 
 def run_site(r, steps):
     dom, url = r["src"], r["url"]
-    env = dict(os.environ, SUBMIT_MAX_MINUTES="10")
+    # Live submit 只能进入 Ego Browser。即使父 shell 残留旧配置,也不向 agent 传
+    # Chrome/Playwright 浏览器路径。
+    env = agent_env()
     # persona 轮换(评论腿):按域 hash 固定抽 persona + 作者网址池轮换,
     # 破 Akismet 跨站签名;目录腿不覆盖(目录链必须指主域)。
     plat = r.get("plat") or ""
@@ -193,10 +251,16 @@ def run_site(r, steps):
         env["IDENTITY_FORCE"] = f"{p['name']}|{p['email']}|{u}"
     print(f"[{time.strftime('%H:%M:%S')}] {dom} ⇠ {url[:60]}", flush=True)
     try:
-        p = subprocess.run([NODE, str(HERE / "agent_submit.mjs"), url,
-                            "--kit", KIT, "--steps", str(steps)],
-                           env=env, capture_output=True, text=True, timeout=900,
-                           cwd=str(HERE))
+        agent_args = [url, "--kit", KIT, "--steps", str(steps)]
+        env_file = write_ego_environment(env)
+        try:
+            source = ego_agent_script(
+                agent_args, env["EGO_TASK_SPACE"], env_file)
+            p = subprocess.run([EGO_BROWSER, "nodejs"], input=source,
+                               env=env, capture_output=True, text=True, timeout=900,
+                               cwd=str(HERE))
+        finally:
+            env_file.unlink(missing_ok=True)
         out = p.stdout + p.stderr
         if p.returncode == 42:
             print(f"  [预算熔断] {dom} 打码日预算尽(agent exit 42),本波提前收", flush=True)

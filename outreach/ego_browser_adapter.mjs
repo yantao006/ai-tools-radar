@@ -522,10 +522,29 @@ class EgoContext {
 
   async _syncTabs() {
     const tabs = await this.helpers.listTabs();
+    const openerByTarget = new Map(tabs.map((tab) => [
+      tab.targetId, tab.openerId || tab.openerTargetId || '',
+    ]));
+    try {
+      const result = await this.helpers.cdp('Target.getTargets', {});
+      for (const info of result && result.targetInfos || []) {
+        if (info && info.targetId && info.openerId) openerByTarget.set(info.targetId, info.openerId);
+      }
+    } catch {}
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const tab of tabs) {
+        if (this.ignoredTargets.has(tab.targetId) || this.ownedTargets.has(tab.targetId)) continue;
+        if (this.ownedTargets.has(openerByTarget.get(tab.targetId))) {
+          this.ownedTargets.add(tab.targetId);
+          changed = true;
+        }
+      }
+    }
     const known = new Map(this.pagesCache.map((page) => [page.targetId, page]));
     for (const tab of tabs) {
-      if (this.ignoredTargets.has(tab.targetId)) continue;
-      this.ownedTargets.add(tab.targetId);
+      if (!this.ownedTargets.has(tab.targetId)) continue;
       let page = known.get(tab.targetId);
       if (!page) {
         page = new EgoPage(this, tab);
@@ -554,6 +573,7 @@ class EgoContext {
       throw new Error('Ego 未能创建本次运行的专用标签页');
     }
     this.ownedTargets.add(tab.targetId);
+    await this.helpers.switchTab(tab.targetId);
     await this._syncTabs();
     let page = this.pagesCache.find((item) => item.targetId === tab.targetId);
     if (!page) {

@@ -231,6 +231,12 @@ await t('Ego adapter 复用 task space', async () => {
     drainEvents: async () => [],
     cdp: async (method) => {
       cdpTargets.push([method, tabs.find((tab) => tab.active).targetId]);
+      if (method === 'Target.getTargets') {
+        return { targetInfos: tabs.map((tab) => ({
+          targetId: tab.targetId,
+          openerId: tab.openerId || '',
+        })) };
+      }
       return method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f1' } } } : {};
     },
   };
@@ -240,8 +246,15 @@ await t('Ego adapter 复用 task space', async () => {
   if (selected !== 'seedream-outreach' || page.targetId !== 'agent-tab') throw new Error('未创建专用标签页');
   if (ego.context.pages().length !== 1 || ego.context.pages()[0].targetId !== 'agent-tab') throw new Error('既有标签页被 context 接管');
   if (cdpTargets.some(([, targetId]) => targetId === 'user-tab')) throw new Error('路由触碰既有标签页');
+  tabs.push(
+    { targetId: 'user-late', url: 'https://notes.example.com/', active: false },
+    { targetId: 'agent-popup', openerId: 'agent-tab', url: 'https://accounts.example.com/', active: false },
+  );
+  await page.waitForTimeout(1);
+  const owned = ego.context.pages().map((item) => item.targetId).sort();
+  if (owned.join(',') !== 'agent-popup,agent-tab') throw new Error(`运行中新页所有权错误:${owned.join(',')}`);
   await ego.browser.close();
-  if (closedTargets.length !== 1 || closedTargets[0] !== 'agent-tab') throw new Error('专用标签页未被独占回收');
+  if (closedTargets.sort().join(',') !== 'agent-popup,agent-tab') throw new Error('自有标签页未被独占回收');
 });
 const rd = await import('../rootdomain.mjs');
 await t('rootDomain(PSL)', () => { if (rd.rootDomain('a.b.example.co.uk') !== 'example.co.uk') throw new Error('得到 ' + rd.rootDomain('a.b.example.co.uk')); });

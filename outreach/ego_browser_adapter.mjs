@@ -511,6 +511,10 @@ class EgoContext {
     this.initScripts = [];
     this.pagesCache = [];
     this.pageHandlers = [];
+    this.ignoredTargets = new Set();
+    this.ownedTargets = new Set();
+    this.initialized = false;
+    this.tabSequence = 0;
   }
 
   pages() { return this.pagesCache.filter((page) => !page.isClosed()); }
@@ -520,6 +524,8 @@ class EgoContext {
     const tabs = await this.helpers.listTabs();
     const known = new Map(this.pagesCache.map((page) => [page.targetId, page]));
     for (const tab of tabs) {
+      if (this.ignoredTargets.has(tab.targetId)) continue;
+      this.ownedTargets.add(tab.targetId);
       let page = known.get(tab.targetId);
       if (!page) {
         page = new EgoPage(this, tab);
@@ -538,8 +544,16 @@ class EgoContext {
   }
 
   async newPage() {
-    let tab = await this.helpers.ensureRealTab();
-    if (!tab) tab = await this.helpers.openOrReuseTab('about:blank', { wait: false });
+    if (!this.initialized) {
+      for (const tab of await this.helpers.listTabs()) this.ignoredTargets.add(tab.targetId);
+      this.initialized = true;
+    }
+    const nonce = `${process.pid}-${Date.now()}-${++this.tabSequence}`;
+    const tab = await this.helpers.openOrReuseTab(`about:blank#outreach-${nonce}`, { wait: false });
+    if (!tab || !tab.targetId || this.ignoredTargets.has(tab.targetId)) {
+      throw new Error('Ego 未能创建本次运行的专用标签页');
+    }
+    this.ownedTargets.add(tab.targetId);
     await this._syncTabs();
     let page = this.pagesCache.find((item) => item.targetId === tab.targetId);
     if (!page) {
@@ -598,7 +612,6 @@ export async function createEgoBrowser(helpers, options = {}) {
   const taskName = options.taskName || 'seedream-outreach';
   const task = await helpers.useOrCreateTaskSpace(taskName);
   const context = new EgoContext(helpers, options);
-  await context._syncTabs();
   return { task, browser: new EgoBrowser(context), context };
 }
 

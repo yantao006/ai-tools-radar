@@ -209,22 +209,36 @@ await t('Ego 环境桥最小化', () => {
   if (env.AWS_SECRET_ACCESS_KEY || env.CHROME_BIN) throw new Error('无关或禁用环境被桥接');
 });
 await t('Ego adapter 复用 task space', async () => {
-  const tab = { targetId: 't1', url: 'https://example.com/', active: true };
+  const existing = { targetId: 'user-tab', url: 'https://mail.example.com/', active: true };
+  const tabs = [existing];
   let selected = '';
+  const cdpTargets = [];
   const helpers = {
     useOrCreateTaskSpace: async (name) => { selected = name; return { id: 1, name }; },
-    listTabs: async () => [tab],
-    ensureRealTab: async () => tab,
-    openOrReuseTab: async () => tab,
-    switchTab: async () => {},
+    listTabs: async () => tabs,
+    ensureRealTab: async () => existing,
+    openOrReuseTab: async (url) => {
+      const tab = { targetId: 'agent-tab', url, active: false };
+      tabs.push(tab);
+      return tab;
+    },
+    switchTab: async (targetId) => {
+      for (const tab of tabs) tab.active = tab.targetId === targetId;
+    },
     closeTab: async () => {},
-    pageInfo: async () => ({ url: tab.url }),
-    cdp: async (method) => method === 'Page.getFrameTree'
-      ? { frameTree: { frame: { id: 'f1' } } } : {},
+    pageInfo: async () => ({ url: tabs.find((tab) => tab.active).url }),
+    drainEvents: async () => [],
+    cdp: async (method) => {
+      cdpTargets.push([method, tabs.find((tab) => tab.active).targetId]);
+      return method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'f1' } } } : {};
+    },
   };
   const ego = await egoAdapter.createEgoBrowser(helpers, { taskName: 'seedream-outreach' });
+  await ego.context.route('**/*', (route) => route.continue());
   const page = await ego.context.newPage();
-  if (selected !== 'seedream-outreach' || page.url() !== tab.url) throw new Error('task/tab 未复用');
+  if (selected !== 'seedream-outreach' || page.targetId !== 'agent-tab') throw new Error('未创建专用标签页');
+  if (ego.context.pages().length !== 1 || ego.context.pages()[0].targetId !== 'agent-tab') throw new Error('既有标签页被 context 接管');
+  if (cdpTargets.some(([, targetId]) => targetId === 'user-tab')) throw new Error('路由触碰既有标签页');
   await ego.browser.close();
 });
 const rd = await import('../rootdomain.mjs');

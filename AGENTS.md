@@ -57,16 +57,22 @@ python3 targets.py                        # 只生成候选 worklist.jsonl，不
 - 飞书只存数据，不替代本文件中的操作机制。
 - 使用官方 `lark-cli` 并加 `--as user` 读取和更新飞书数据。
 - 外链数据总目录：[外链建设](https://lcnnll51lape.feishu.cn/drive/folder/XMwFfLi2rlUfTcdRRMLciFU0nGe)。
-- 操作员的个人、公司和产品表单字段：[基本资料](https://lcnnll51lape.feishu.cn/sheets/Ojw4s17ePhanBEtDEzrcbAmin6f)。
+- 操作员的共用身份资料和登录收信邮箱来自[基本资料](https://lcnnll51lape.feishu.cn/sheets/Ojw4s17ePhanBEtDEzrcbAmin6f)，其中「给 agent 用的邮箱」是注册、登录和验证邮件使用的邮箱，不是产品公开联系邮箱。
 - 全局复用的平台账号及密码：[平台账号](https://lcnnll51lape.feishu.cn/sheets/VVIQsejZshywZ5tYCmhcwBUJnYd)。
 - 全局复用的已实操平台信息、官方徽章和互链 HTML：[平台玩法](https://lcnnll51lape.feishu.cn/sheets/SXbCssNdUhlzdCtDVXlc7UWCnRb)。
-- 每个产品必须在外链数据总目录下使用独立的 `产品-<site>` 文件夹和投放台账，投放台账按目录域名一站一行保存进度与实操证据。
-- 当前活动使用[此产品文件夹](https://lcnnll51lape.feishu.cn/drive/folder/HlNZf1ZeSlNG1pdH0Aecqt9rnUh)及其中的[投放台账](https://lcnnll51lape.feishu.cn/sheets/Lrgjs71bXhBDpft8iMFcGtvtn7R)。
-- 新产品必须新建自己的产品文件夹和投放台账，不得把不同产品混入当前活动或其他产品的台账。
-- 实时投放前，从飞书读取当前产品的公开站点 URL、公开产品名、投放或联系邮箱、投放人姓名和页脚文案，并查询目标目录已有的平台账号与平台玩法记录。
-- 缺少任何必填产品字段时立即停止并询问，绝不猜测。
-- 将本次读取的产品字段复制到被 gitignore 的 `outreach/kit.json` 后再投放；`kit.json` 只是本次运行的本地副本，不是事实来源。
-- 注册、登录和验证邮件使用飞书记录的 `agent.qq.com` 操作员邮箱；公开列表和联系字段使用飞书中当前产品的公开邮箱。
+- 每个产品必须在外链数据总目录下使用独立的 `产品-<site>` 文件夹，并拥有自己的「站点资料」sheet、「素材」文件夹和「投放台账」。
+- 投放台账按目录域名一站一行保存进度与实操证据。
+- 当前活动使用[产品文件夹](https://lcnnll51lape.feishu.cn/drive/folder/HlNZf1ZeSlNG1pdH0Aecqt9rnUh)、[站点资料](https://lcnnll51lape.feishu.cn/sheets/QyzKsGOLfhFTGItfUT0cxP3Inbc)（`字段` / `文案` / `素材` / `红线`）、[素材文件夹](https://lcnnll51lape.feishu.cn/drive/folder/RAB2fTSI6lYzOTdsxtOcVyMSnac)和[投放台账](https://lcnnll51lape.feishu.cn/sheets/Lrgjs71bXhBDpft8iMFcGtvtn7R)。
+- 新产品必须使用自己的完整 `产品-<site>` 资料包，不得把其他产品塞进当前 Seedream 资料包或任何既有产品的台账。
+- 船长以后确认要为另一个 AI 工具站整理投放素材时，由 Firstmate 创建该站的飞书 `产品-<site>` 资料包，Radar 只读取该资料包，不在这里编写或维护产品文案。
+- 实时投放前，必须从当前产品「站点资料」的 `字段` 和 `文案` 页签读取完整投放资料：公开站点 URL、公开产品名、投放或联系邮箱、投放人姓名、页脚文案、一句话介绍、差异点、分类与标签、筛选事实、受众说明、可引用事实，以及按长度分档的中英文文案变体。
+- 同时读取「站点资料」的 `素材` 页签和该产品的「素材」文件夹，包括 logo、OG 图、hero 图和截图。
+- 把素材 URL 复制到本次运行资料中；目录表单需要上传文件时，再把对应文件下载到本次运行被 Git 忽略的 `outreach/run/assets/`，禁止跨产品复用素材。
+- 必须读取 `视频链接` 字段；空值表示该公开产品没有视频，目录表单必填视频时按硬性必需死路处理，不得编造视频。
+- 必须读取 `红线` 页签并同步到 `outreach/kit.json` 的 forbidden claims；不得编造 `字段` 页签标为空的 GitHub、付费套餐截图、额外截图或其他能力与素材。
+- 除明确表示某项不存在的空值外，缺少任何目录投放所需的必填产品字段时立即停止并询问，绝不猜测。
+- 投放前将本次读取的完整资料复制到被 Git 忽略的 `outreach/kit.json`；`kit.json` 只是本次运行的本地副本，不是事实来源。
+- 公开列表和联系字段只使用当前产品「站点资料」中的公开邮箱。
 - 登录邮箱与公开联系邮箱职责不同，不得虚构第三个邮箱，也不得使用 Gmail。
 - 完成一次实际演练或真实投放后，无论结果如何，都必须在同一轮更新该产品的投放台账，包括结果、进度和实操证据。
 - 真实投放成功后，还要把目录提供的官方徽章或互链 HTML 原样保存到平台玩法，并在使用时严格照抄提交页提供的代码。
@@ -99,7 +105,7 @@ python3 targets.py                        # 只生成候选 worklist.jsonl，不
 - 不得先让操作员完成验证，再回头填表或改字段。
 - 改字段会作废验证、触发 CAPTCHA verification failed，并增加交互次数。
 - 不得编造产品能力或素材。
-- 表单缺少可如实提供的视频、截图、GitHub 或付费套餐等可选字段时留空；需要确认事实时停下来交给船长查看。
+- 当前产品「站点资料」明确标为空的视频、截图、GitHub、付费套餐或其他可选字段必须留空，不得补造；未记录且需要确认事实时停下来交给船长查看。
 - 已确认必填字段无法如实填写时，按硬性必需死路处理。
 - 软性或可选阻碍必须由操作员判断，绝不能自动判定为失败。
 - 软性或可选阻碍只包括互链或徽章要求、联盟或质量门槛。

@@ -71,6 +71,8 @@ python3 targets.py                        # 只生成候选 worklist.jsonl，不
 - Google 或 GitHub 登录是默认自动执行：用 Ego 里已经登录的 Default/Tao 会话点完即可。
 - 不得把 “Continue with Google”、GitHub OAuth、或仅 OAuth 的最终提交墙交给操作员，也不得因此停下来等待判断。
 - 仅在以下情况交接一次：验证码、数学题或 Turnstile；Ego 当前没有可用的 Google 或 GitHub 会话；站点要填的是操作员已有密码，而不是本次生成的密码。
+- 表单同时需要 Cloudflare Turnstile 或同类机器人验证时，必须先填完全部必填字段且不再改动，再做验证；需要人工时也只在表单填完之后才交接。
+- 不得先让操作员完成验证，再回头填表或改字段。改字段会作废验证、触发 CAPTCHA verification failed，并增加交互次数。
 - 软性或可选阻碍必须由操作员判断，绝不能自动判定为失败。
 - 软性或可选阻碍只包括互链或徽章要求、联盟或质量门槛。OAuth 登录不是软阻碍。
 - 遇到软性或可选阻碍时，把当前实时 Ego 任务空间交给操作员，说明页面要求与可选方案，然后等待。

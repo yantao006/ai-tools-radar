@@ -52,8 +52,10 @@ python3 targets.py                        # 只生成候选 worklist.jsonl，不
 ### Seedream 实时目录投放操作规则
 
 - Seedream 产品地址固定为 `https://seedream-5.site/`。
-- 所有表单、注册和验证邮件统一使用 `support@seedream-5.site`，姓名统一使用 `Yan Tao`。
-- 不得使用 Gmail，也不得在任何表单填写 `yantao006@agent.qq.com`。
+- 账号注册、登录和验证邮件使用 `yantao006@agent.qq.com`（`agent.qq.com`）。
+- 公开产品名、站点 URL、联系邮箱和页脚类字段使用 `support@seedream-5.site`，姓名使用 `Yan Tao`。
+- 不得使用 Gmail。
+- 不得虚构第三个邮箱；登录箱与公开联系箱职责不同，不是第二个产品邮箱。
 - 实时目录投放只能使用 `ego-browser` 驱动 Ego。
 - 实时投放不得使用 Chrome、Chromium、Playwright 或 `chrome-devtools-axi`，旧 `driver.py` 和 `agent_submit.mjs` 仅供代码维护和离线测试参考。
 - 目标目录只收录导航、论坛、博客和 paid 类站点。
@@ -62,17 +64,21 @@ python3 targets.py                        # 只生成候选 worklist.jsonl，不
 - 真实 POST 发出后绝不自动重试，`delivery_ambiguous` 永远只由人工裁决。
 - 新建任何目录账号前，操作员必须明确点名授权该具体站点。
 - 已有安全保存凭据的站点可以登录。
+- 登录顺序：先邮箱，再 Google，再 GitHub。缺邮箱路径或邮箱走不通时，默认继续 Google，再不行则 GitHub。
+- 邮箱加密码注册是默认自动执行：自行生成密码，只写入本 worktree 被 gitignore 的 `outreach/creds.json`，填表，并用同 worktree 常驻的 `agent.qq.com` sweeper 完成验证。
+- 不得把密码打印、写入日志、写入聊天或写入 status。
+- 密码栏不是交接：本次生成的密码由代理自己填写。
+- Google 或 GitHub 登录是默认自动执行：用 Ego 里已经登录的 Default/Tao 会话点完即可。
+- 不得把 “Continue with Google”、GitHub OAuth、或仅 OAuth 的最终提交墙交给操作员，也不得因此停下来等待判断。
+- 仅在以下情况交接一次：验证码、数学题或 Turnstile；Ego 当前没有可用的 Google 或 GitHub 会话；站点要填的是操作员已有密码，而不是本次生成的密码。
 - 软性或可选阻碍必须由操作员判断，绝不能自动判定为失败。
-- 软性或可选阻碍包括仅支持 Google、GitHub 或其他 OAuth 的登录，互链或徽章要求，联盟或质量门槛，以及验证码、数学题或 Turnstile。
+- 软性或可选阻碍只包括互链或徽章要求、联盟或质量门槛。OAuth 登录不是软阻碍。
 - 遇到软性或可选阻碍时，把当前实时 Ego 任务空间交给操作员，说明页面要求与可选方案，然后等待。
 - 只要仍有可选方案，就不得把站点记为 `failed`，也不得以不可行为由跳过。
 - 只有遇到硬性必需死路，或操作员明确拒绝所有仍可行的选项后，才能记录 `failed`。
 - 硬性必需死路仅包括确认没有提交入口、确认重复且站点已接受过提交（例如 HTTP 409）、或确认站点宕机。
 - `mail_sweeper.py --loop` 必须与实时投放者运行在同一个隔离 worktree 中。
 - 当 AgentMail 没有来信时，QQ 路径是实时收信路径。
-- 代理绝不能输入密码，需输入密码时必须把任务交给操作员。
-- 代理绝不能自行完成 Google 或 GitHub OAuth。
-- 代理绝不能虚构第二个产品邮箱。
 
 **改 `outreach/` 任何代码，前后都跑 `bash outreach/tests/smoke.sh`**（语法 + Python 关键路径
 29 项 + Node 关键路径 47 项 + 配置 py/js 对拍 43 组 + 12 进程并发认领）。

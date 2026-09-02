@@ -44,7 +44,7 @@ cd <本目录> && python3 -m http.server 8899
 cd outreach && npm install   # 仅安装旧工具与离线测试依赖；真实目录投放不得使用 Playwright/Chrome
 python3 configure.py                     # LLM 端点 + 打码/收信 key(本机界面,带实测按钮)
 python3 check_llm.py                     # 或纯命令行验端点(连通性 + json_object)
-cp kit.example.json kit.json             # 产品资料包(填表槽位/forbidden_claims 红线)
+cp kit.example.json kit.json             # 创建本次运行配置文件
 cp identities.example.json identities.json  # persona 池
 python3 targets.py                        # 只生成候选 worklist.jsonl，不会提交
 ```
@@ -60,21 +60,11 @@ python3 targets.py                        # 只生成候选 worklist.jsonl，不
 - 操作员的共用身份资料和登录收信邮箱来自[基本资料](https://lcnnll51lape.feishu.cn/sheets/Ojw4s17ePhanBEtDEzrcbAmin6f)，其中「给 agent 用的邮箱」是注册、登录和验证邮件使用的邮箱，不是产品公开联系邮箱。
 - 全局复用的平台账号及密码：[平台账号](https://lcnnll51lape.feishu.cn/sheets/VVIQsejZshywZ5tYCmhcwBUJnYd)。
 - 全局复用的已实操平台信息、官方徽章和互链 HTML：[平台玩法](https://lcnnll51lape.feishu.cn/sheets/SXbCssNdUhlzdCtDVXlc7UWCnRb)。
-- 每个产品必须在外链数据总目录下使用独立的 `产品-<site>` 文件夹，并拥有自己的「站点资料」sheet、「素材」文件夹和「投放台账」。
+- 单次运行的投放身份来自 Firstmate 为该活动加载的飞书资料包，不得在本文件硬编码具体活动产品。
 - 投放台账按目录域名一站一行保存进度与实操证据。
-- 当前活动使用[产品文件夹](https://lcnnll51lape.feishu.cn/drive/folder/HlNZf1ZeSlNG1pdH0Aecqt9rnUh)、[站点资料](https://lcnnll51lape.feishu.cn/sheets/QyzKsGOLfhFTGItfUT0cxP3Inbc)（`字段` / `文案` / `素材` / `红线`）、[素材文件夹](https://lcnnll51lape.feishu.cn/drive/folder/RAB2fTSI6lYzOTdsxtOcVyMSnac)和[投放台账](https://lcnnll51lape.feishu.cn/sheets/Lrgjs71bXhBDpft8iMFcGtvtn7R)。
-- 新产品必须使用自己的完整 `产品-<site>` 资料包，不得把其他产品塞进当前 Seedream 资料包或任何既有产品的台账。
-- 船长以后确认要为另一个 AI 工具站整理投放素材时，由 Firstmate 创建该站的飞书 `产品-<site>` 资料包，Radar 只读取该资料包，不在这里编写或维护产品文案。
-- 实时投放前，必须从当前产品「站点资料」的 `字段` 和 `文案` 页签读取完整投放资料：公开站点 URL、公开产品名、投放或联系邮箱、投放人姓名、页脚文案、一句话介绍、差异点、分类与标签、筛选事实、受众说明、可引用事实，以及按长度分档的中英文文案变体。
-- 同时读取「站点资料」的 `素材` 页签和该产品的「素材」文件夹，包括 logo、OG 图、hero 图和截图。
-- 把素材 URL 复制到本次运行资料中；目录表单需要上传文件时，再把对应文件下载到本次运行被 Git 忽略的 `outreach/run/assets/`，禁止跨产品复用素材。
-- 必须读取 `视频链接` 字段；空值表示该公开产品没有视频，目录表单必填视频时按硬性必需死路处理，不得编造视频。
-- 必须读取 `红线` 页签并同步到 `outreach/kit.json` 的 forbidden claims；不得编造 `字段` 页签标为空的 GitHub、付费套餐截图、额外截图或其他能力与素材。
-- 除明确表示某项不存在的空值外，缺少任何目录投放所需的必填产品字段时立即停止并询问，绝不猜测。
-- 投放前将本次读取的完整资料复制到被 Git 忽略的 `outreach/kit.json`；`kit.json` 只是本次运行的本地副本，不是事实来源。
-- 公开列表和联系字段只使用当前产品「站点资料」中的公开邮箱。
+- 公开列表和联系字段只使用本次活动资料中的公开邮箱。
 - 登录邮箱与公开联系邮箱职责不同，不得虚构第三个邮箱，也不得使用 Gmail。
-- 完成一次实际演练或真实投放后，无论结果如何，都必须在同一轮更新该产品的投放台账，包括结果、进度和实操证据。
+- 完成一次实际演练或真实投放后，无论结果如何，都必须在同一轮更新该活动的投放台账，包括结果、进度和实操证据。
 - 真实投放成功后，还要把目录提供的官方徽章或互链 HTML 原样保存到平台玩法，并在使用时严格照抄提交页提供的代码。
 - 不得纠正官方素材的文件名或凭记忆修改 URL，例如对方文件名是 `bage.png` 时不得改成 `badge.png`。
 - 新生成目录密码后，必须写入平台账号和本 worktree 被 gitignore 的 `outreach/creds.json`，绝不能提交到 Git，也不能写入聊天。
@@ -105,7 +95,6 @@ python3 targets.py                        # 只生成候选 worklist.jsonl，不
 - 不得先让操作员完成验证，再回头填表或改字段。
 - 改字段会作废验证、触发 CAPTCHA verification failed，并增加交互次数。
 - 不得编造产品能力或素材。
-- 当前产品「站点资料」明确标为空的视频、截图、GitHub、付费套餐或其他可选字段必须留空，不得补造；未记录且需要确认事实时停下来交给船长查看。
 - 已确认必填字段无法如实填写时，按硬性必需死路处理。
 - 软性或可选阻碍必须由操作员判断，绝不能自动判定为失败。
 - 软性或可选阻碍只包括互链或徽章要求、联盟或质量门槛。
@@ -130,11 +119,10 @@ LLM 配置收口在 `llm_config.py` / `llm_config.mjs`(两份规则逐条一致)
 `LLM_API_KEY`,也认通用的 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 和文件 `llm.json`;
 旧名 `LLM_ENDPOINT` / `LLM_KEY` 仍可用但会提示改名。`python3 llm_config.py` 看当前解析结果。
 
-**开工前确认运行条件齐全**（缺了别跑）：OpenAI 兼容 LLM 端点（LLM_* 环境变量）、收信信箱、persona 身份池（`identities.json`），以及飞书中当前产品的完整必填字段。
+**开工前确认运行条件齐全**（缺了别跑）：OpenAI 兼容 LLM 端点（LLM_* 环境变量）、收信信箱、persona 身份池（`identities.json`）和本次活动投放资料。
 收信至少有一条路径可用：`agent.qq.com` 使用 agently-cli `auth login`；agentmail.to 使用写入 `my_site.json` 的 `agentmail_*` API key，并安装 `agentmail` 与 `curl_cffi`。
 `mail_sweeper.py` 是生产文件逐字复制的最小改动移植，改它先读文件头移植说明。
 
-- `kit.json` 是从飞书同步且被 gitignore 的单次运行副本，`identities.json` 和 `my_site.json` 是占位模板；投放前必须换成真实数据，不能使用示例值。
 - 实时投放先在 Ego 中逐站验证 5 个目标，没问题再放量；不得用 `driver.py` 或 `agent_submit.mjs` 对真实站点投放；state.jsonl 是唯一状态源，别手改
 - **写账本只能走 `state.upsert_submission` / `state.mjs upsertSubmission`**，不许直接
   往 state.jsonl 追加行：迁移守卫（投达态不许被打回 blocked/failed）就在那里，绕过去

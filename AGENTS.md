@@ -49,36 +49,68 @@ cp identities.example.json identities.json  # persona 池
 python3 targets.py                        # 只生成候选 worklist.jsonl，不会提交
 ```
 
-### Seedream 实时目录投放操作规则
+### 实时目录投放操作规则
 
-- Seedream 产品地址固定为 `https://seedream-5.site/`。
-- 账号注册、登录和验证邮件使用 `yantao006@agent.qq.com`（`agent.qq.com`）。
-- 公开产品名、站点 URL、联系邮箱和页脚类字段使用 `support@seedream-5.site`，姓名使用 `Yan Tao`。
-- 不得使用 Gmail。
-- 不得虚构第三个邮箱；登录箱与公开联系箱职责不同，不是第二个产品邮箱。
+#### 机制与飞书数据面
+
+- 本文件是实时投放机制的唯一操作手册，规定登录顺序、Turnstile 顺序、单次 POST、交接条件以及软硬阻碍的判定。
+- 飞书只存数据，不替代本文件中的操作机制。
+- 使用官方 `lark-cli` 并加 `--as user` 读取和更新飞书数据。
+- 外链数据总目录：[外链建设](https://lcnnll51lape.feishu.cn/drive/folder/XMwFfLi2rlUfTcdRRMLciFU0nGe)。
+- 操作员的个人、公司和产品表单字段：[基本资料](https://lcnnll51lape.feishu.cn/sheets/Ojw4s17ePhanBEtDEzrcbAmin6f)。
+- 全局复用的平台账号及密码：[平台账号](https://lcnnll51lape.feishu.cn/sheets/VVIQsejZshywZ5tYCmhcwBUJnYd)。
+- 全局复用的已实操平台信息、官方徽章和互链 HTML：[平台玩法](https://lcnnll51lape.feishu.cn/sheets/SXbCssNdUhlzdCtDVXlc7UWCnRb)。
+- 每个产品必须在外链数据总目录下使用独立的 `产品-<site>` 文件夹和投放台账，投放台账按目录域名一站一行保存进度与实操证据。
+- 当前活动使用[此产品文件夹](https://lcnnll51lape.feishu.cn/drive/folder/HlNZf1ZeSlNG1pdH0Aecqt9rnUh)及其中的[投放台账](https://lcnnll51lape.feishu.cn/sheets/Lrgjs71bXhBDpft8iMFcGtvtn7R)。
+- 新产品必须新建自己的产品文件夹和投放台账，不得把不同产品混入当前活动或其他产品的台账。
+- 实时投放前，从飞书读取当前产品的公开站点 URL、公开产品名、投放或联系邮箱、投放人姓名和页脚文案，并查询目标目录已有的平台账号与平台玩法记录。
+- 缺少任何必填产品字段时立即停止并询问，绝不猜测。
+- 将本次读取的产品字段复制到被 gitignore 的 `outreach/kit.json` 后再投放；`kit.json` 只是本次运行的本地副本，不是事实来源。
+- 注册、登录和验证邮件使用飞书记录的 `agent.qq.com` 操作员邮箱；公开列表和联系字段使用飞书中当前产品的公开邮箱。
+- 登录邮箱与公开联系邮箱职责不同，不得虚构第三个邮箱，也不得使用 Gmail。
+- 完成一次实际演练或真实投放后，无论结果如何，都必须在同一轮更新该产品的投放台账，包括结果、进度和实操证据。
+- 真实投放成功后，还要把目录提供的官方徽章或互链 HTML 原样保存到平台玩法，并在使用时严格照抄提交页提供的代码。
+- 不得纠正官方素材的文件名或凭记忆修改 URL，例如对方文件名是 `bage.png` 时不得改成 `badge.png`。
+- 新生成目录密码后，必须写入平台账号和本 worktree 被 gitignore 的 `outreach/creds.json`，绝不能提交到 Git，也不能写入聊天。
+- 不得把密码、税号、身份证件或银行账号打印或写入日志、聊天、Git、status。
+- 桌面调研或 ChatGPT 候选列表不代表实操结果；只有来自真实投放的飞书投放台账行才计入进度。
+
+#### 实时操作机制
+
 - 实时目录投放只能使用 `ego-browser` 驱动 Ego。
 - 实时投放不得使用 Chrome、Chromium、Playwright 或 `chrome-devtools-axi`，旧 `driver.py` 和 `agent_submit.mjs` 仅供代码维护和离线测试参考。
+- 每个目录使用一个独立 Ego 空间，只在该站成功、失败或船长取消后关闭。
+- 等待验证码或人工处理时必须保留当前 Ego 空间，不得中途关闭。
 - 目标目录只收录导航、论坛、博客和 paid 类站点。
 - 忽略站长目录（webmaster directories）以及自然获得的引用和媒体报道（organic/media citations）。
+- Raindrop 一类目标的正确做法是自建公开收藏页，不是向其他人的 `*.raindrop.page` 投稿。
 - 每个站点最多执行一次真实 POST。
 - 真实 POST 发出后绝不自动重试，`delivery_ambiguous` 永远只由人工裁决。
-- 新建任何目录账号前，操作员必须明确点名授权该具体站点。
+- 船长点名某个目录进行投放，即同时授权在该目录自动注册和自动登录，不再另行请求账号创建授权。
 - 已有安全保存凭据的站点可以登录。
-- 登录顺序：先邮箱，再 Google，再 GitHub。缺邮箱路径或邮箱走不通时，默认继续 Google，再不行则 GitHub。
-- 邮箱加密码注册是默认自动执行：自行生成密码，只写入本 worktree 被 gitignore 的 `outreach/creds.json`，填表，并用同 worktree 常驻的 `agent.qq.com` sweeper 完成验证。
-- 不得把密码打印、写入日志、写入聊天或写入 status。
-- 密码栏不是交接：本次生成的密码由代理自己填写。
-- Google 或 GitHub 登录是默认自动执行：用 Ego 里已经登录的 Default/Tao 会话点完即可。
-- 不得把 “Continue with Google”、GitHub OAuth、或仅 OAuth 的最终提交墙交给操作员，也不得因此停下来等待判断。
-- 仅在以下情况交接一次：验证码、数学题或 Turnstile；Ego 当前没有可用的 Google 或 GitHub 会话；站点要填的是操作员已有密码，而不是本次生成的密码。
-- 表单同时需要 Cloudflare Turnstile 或同类机器人验证时，必须先填完全部必填字段且不再改动，再做验证；需要人工时也只在表单填完之后才交接。
-- 不得先让操作员完成验证，再回头填表或改字段。改字段会作废验证、触发 CAPTCHA verification failed，并增加交互次数。
+- 登录顺序：先邮箱，再 Google，再 GitHub。
+- 缺少邮箱路径或邮箱路径走不通时，默认继续 Google，再不行则继续 GitHub。
+- 邮箱加密码注册默认自动执行：自行生成密码，按上面的数据规则写入平台账号和 `outreach/creds.json`，填表，并用同 worktree 常驻的 `agent.qq.com` sweeper 完成验证。
+- 密码栏不是交接，本次生成的密码由代理自己填写。
+- Google 或 GitHub 登录默认自动执行，使用 Ego 中已经登录的 Default/Tao 会话完成。
+- 不得把 “Continue with Google”、GitHub OAuth 或仅 OAuth 的最终提交墙交给操作员，也不得因此停下来等待判断。
+- 仅在以下情况交接一次：验证码、数学题或 Turnstile；Ego 当前没有可用的 Google 或 GitHub 会话；站点要求填写操作员已有、并非本次生成的密码。
+- 表单同时需要 Cloudflare Turnstile 或同类机器人验证时，必须先填完并冻结全部必填字段，再做验证；需要人工时也只在表单填完之后交接。
+- 不得先让操作员完成验证，再回头填表或改字段。
+- 改字段会作废验证、触发 CAPTCHA verification failed，并增加交互次数。
+- 不得编造产品能力或素材。
+- 表单缺少可如实提供的视频、截图、GitHub 或付费套餐等可选字段时留空；需要确认事实时停下来交给船长查看。
+- 已确认必填字段无法如实填写时，按硬性必需死路处理。
 - 软性或可选阻碍必须由操作员判断，绝不能自动判定为失败。
-- 软性或可选阻碍只包括互链或徽章要求、联盟或质量门槛。OAuth 登录不是软阻碍。
+- 软性或可选阻碍只包括互链或徽章要求、联盟或质量门槛。
+- OAuth 登录不是软阻碍。
+- DirOnix、SubmitDeck 一类免费互链站必须先登录，再走免费提交流程。
+- 只有现场表单强制要求互链或徽章时，才把提交页提供的官方链接或代码原样放到产品站现网。
+- 不得自行购买 `$9`、`$129` 等免排队或付费方案，除非船长对该站单独授权付款。
 - 遇到软性或可选阻碍时，把当前实时 Ego 任务空间交给操作员，说明页面要求与可选方案，然后等待。
 - 只要仍有可选方案，就不得把站点记为 `failed`，也不得以不可行为由跳过。
 - 只有遇到硬性必需死路，或操作员明确拒绝所有仍可行的选项后，才能记录 `failed`。
-- 硬性必需死路仅包括确认没有提交入口、确认重复且站点已接受过提交（例如 HTTP 409）、或确认站点宕机。
+- 硬性必需死路包括：确认没有提交入口；确认重复且站点已接受过提交（例如 HTTP 409）；确认站点宕机；Login 或 Register 明确标注 Coming soon；联系页看似可提交但实际无法发出；必填项无法按产品真实情况填写；入口连续打不开或超时。
 - `mail_sweeper.py --loop` 必须与实时投放者运行在同一个隔离 worktree 中。
 - 当 AgentMail 没有来信时，QQ 路径是实时收信路径。
 
@@ -92,13 +124,11 @@ LLM 配置收口在 `llm_config.py` / `llm_config.mjs`(两份规则逐条一致)
 `LLM_API_KEY`,也认通用的 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 和文件 `llm.json`;
 旧名 `LLM_ENDPOINT` / `LLM_KEY` 仍可用但会提示改名。`python3 llm_config.py` 看当前解析结果。
 
-**开工前确认用户已准备**（缺了别跑）：OpenAI 兼容 LLM 端点（LLM_* 环境变量）、
-收信信箱（两条腿至少通一条，都免费：agent.qq.com 走 agently-cli `auth login`；
-agentmail.to 拿 API key 填 my_site.json 的 agentmail_* 字段 + `pip install agentmail curl_cffi`）、
-persona 身份池（identities.json）、产品资料包（kit.json）。
-mail_sweeper.py 是生产文件逐字复制的最小改动移植，改它先读文件头移植说明。
+**开工前确认运行条件齐全**（缺了别跑）：OpenAI 兼容 LLM 端点（LLM_* 环境变量）、收信信箱、persona 身份池（`identities.json`），以及飞书中当前产品的完整必填字段。
+收信至少有一条路径可用：`agent.qq.com` 使用 agently-cli `auth login`；agentmail.to 使用写入 `my_site.json` 的 `agentmail_*` API key，并安装 `agentmail` 与 `curl_cffi`。
+`mail_sweeper.py` 是生产文件逐字复制的最小改动移植，改它先读文件头移植说明。
 
-- kit.json / identities.json / my_site.json 全是占位模板，必须替换成用户真实信息，别用示例值投
+- `kit.json` 是从飞书同步且被 gitignore 的单次运行副本，`identities.json` 和 `my_site.json` 是占位模板；投放前必须换成真实数据，不能使用示例值。
 - 实时投放先在 Ego 中逐站验证 5 个目标，没问题再放量；不得用 `driver.py` 或 `agent_submit.mjs` 对真实站点投放；state.jsonl 是唯一状态源，别手改
 - **写账本只能走 `state.upsert_submission` / `state.mjs upsertSubmission`**，不许直接
   往 state.jsonl 追加行：迁移守卫（投达态不许被打回 blocked/failed）就在那里，绕过去
